@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  devin-automation:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: devin-automation-service
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DEVIN_API_KEY=${DEVIN_API_KEY}
+      - DEVIN_ORG_ID=${DEVIN_ORG_ID}
+      - DEVIN_API_BASE_URL=${DEVIN_API_BASE_URL:-https://api.devin.ai/v3}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_REPO_OWNER=${GITHUB_REPO_OWNER:-chengify}
+      - GITHUB_REPO_NAME=${GITHUB_REPO_NAME:-superset}
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+      - AUTO_LABEL=${AUTO_LABEL:-devin-automation}
+      - SESSION_TIMEOUT_MINUTES=${SESSION_TIMEOUT_MINUTES:-30}
+      - MAX_CONCURRENT_SESSIONS=${MAX_CONCURRENT_SESSIONS:-3}
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - devin-network
+
+networks:
+  devin-network:
+    driver: bridge
