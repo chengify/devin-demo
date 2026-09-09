@@ -1,15 +1,15 @@
-import { Octokit } from 'octokit';
-import * as crypto from 'crypto';
-import { config } from '../config';
-import { getLogger } from '../observability/logger';
+import { Octokit } from "octokit";
+import * as crypto from "crypto";
+import { config } from "../config";
+import { getLogger } from "../observability/logger";
 
-const logger = getLogger('github-client');
+const logger = getLogger("github-client");
 
 export interface GitHubIssue {
   number: number;
   title: string;
   body: string;
-  state: 'open' | 'closed';
+  state: "open" | "closed";
   labels: Array<{ name: string }>;
   user: {
     login: string;
@@ -23,7 +23,7 @@ export interface GitHubPullRequest {
   title: string;
   body: string;
   html_url: string;
-  state: 'open' | 'closed';
+  state: "open" | "closed";
   head: {
     ref: string;
     sha: string;
@@ -56,8 +56,8 @@ export class GitHubClient {
 
   async getIssue(issueNumber: number): Promise<GitHubIssue> {
     try {
-      logger.debug('Fetching GitHub issue', { issueNumber });
-      
+      logger.debug("Fetching GitHub issue", { issueNumber });
+
       const response = await this.octokit.rest.issues.get({
         owner: this.owner,
         repo: this.repo,
@@ -66,15 +66,17 @@ export class GitHubClient {
 
       return response.data as GitHubIssue;
     } catch (error) {
-      logger.error('Failed to fetch GitHub issue', { issueNumber, error });
-      throw new Error(`Failed to fetch issue #${issueNumber}: ${this.getErrorMessage(error)}`);
+      logger.error("Failed to fetch GitHub issue", { issueNumber, error });
+      throw new Error(
+        `Failed to fetch issue #${issueNumber}: ${this.getErrorMessage(error)}`,
+      );
     }
   }
 
   async addIssueComment(issueNumber: number, body: string): Promise<void> {
     try {
-      logger.info('Adding comment to GitHub issue', { issueNumber });
-      
+      logger.info("Adding comment to GitHub issue", { issueNumber });
+
       await this.octokit.rest.issues.createComment({
         owner: this.owner,
         repo: this.repo,
@@ -82,17 +84,22 @@ export class GitHubClient {
         body,
       });
 
-      logger.info('Comment added successfully', { issueNumber });
+      logger.info("Comment added successfully", { issueNumber });
     } catch (error) {
-      logger.error('Failed to add comment to issue', { issueNumber, error });
-      throw new Error(`Failed to add comment to issue #${issueNumber}: ${this.getErrorMessage(error)}`);
+      logger.error("Failed to add comment to issue", { issueNumber, error });
+      throw new Error(
+        `Failed to add comment to issue #${issueNumber}: ${this.getErrorMessage(error)}`,
+      );
     }
   }
 
-  async updateIssueLabels(issueNumber: number, labels: string[]): Promise<void> {
+  async updateIssueLabels(
+    issueNumber: number,
+    labels: string[],
+  ): Promise<void> {
     try {
-      logger.info('Updating GitHub issue labels', { issueNumber, labels });
-      
+      logger.info("Updating GitHub issue labels", { issueNumber, labels });
+
       await this.octokit.rest.issues.setLabels({
         owner: this.owner,
         repo: this.repo,
@@ -100,39 +107,49 @@ export class GitHubClient {
         labels,
       });
 
-      logger.info('Labels updated successfully', { issueNumber, labels });
+      logger.info("Labels updated successfully", { issueNumber, labels });
     } catch (error) {
-      logger.error('Failed to update issue labels', { issueNumber, labels, error });
-      throw new Error(`Failed to update labels for issue #${issueNumber}: ${this.getErrorMessage(error)}`);
+      logger.error("Failed to update issue labels", {
+        issueNumber,
+        labels,
+        error,
+      });
+      throw new Error(
+        `Failed to update labels for issue #${issueNumber}: ${this.getErrorMessage(error)}`,
+      );
     }
   }
 
   async closeIssue(issueNumber: number): Promise<void> {
     try {
-      logger.info('Closing GitHub issue', { issueNumber });
-      
+      logger.info("Closing GitHub issue", { issueNumber });
+
       await this.octokit.rest.issues.update({
         owner: this.owner,
         repo: this.repo,
         issue_number: issueNumber,
-        state: 'closed',
+        state: "closed",
       });
 
-      logger.info('Issue closed successfully', { issueNumber });
+      logger.info("Issue closed successfully", { issueNumber });
     } catch (error) {
-      logger.error('Failed to close issue', { issueNumber, error });
-      throw new Error(`Failed to close issue #${issueNumber}: ${this.getErrorMessage(error)}`);
+      logger.error("Failed to close issue", { issueNumber, error });
+      throw new Error(
+        `Failed to close issue #${issueNumber}: ${this.getErrorMessage(error)}`,
+      );
     }
   }
 
-  async createPullRequest(options: CreatePullRequestOptions): Promise<GitHubPullRequest> {
+  async createPullRequest(
+    options: CreatePullRequestOptions,
+  ): Promise<GitHubPullRequest> {
     try {
-      logger.info('Creating GitHub pull request', { 
+      logger.info("Creating GitHub pull request", {
         title: options.title,
         head: options.head,
-        base: options.base 
+        base: options.base,
       });
-      
+
       const response = await this.octokit.rest.pulls.create({
         owner: this.owner,
         repo: this.repo,
@@ -143,22 +160,27 @@ export class GitHubClient {
       });
 
       const pr = response.data as GitHubPullRequest;
-      logger.info('Pull request created successfully', { 
+      logger.info("Pull request created successfully", {
         prNumber: pr.number,
-        url: pr.html_url 
+        url: pr.html_url,
       });
 
       return pr;
     } catch (error) {
-      logger.error('Failed to create pull request', { options, error });
-      throw new Error(`Failed to create pull request: ${this.getErrorMessage(error)}`);
+      logger.error("Failed to create pull request", { options, error });
+      throw new Error(
+        `Failed to create pull request: ${this.getErrorMessage(error)}`,
+      );
     }
   }
 
-  async createBranch(branchName: string, baseBranch: string = 'main'): Promise<string> {
+  async createBranch(
+    branchName: string,
+    baseBranch: string = "main",
+  ): Promise<string> {
     try {
-      logger.info('Creating GitHub branch', { branchName, baseBranch });
-      
+      logger.info("Creating GitHub branch", { branchName, baseBranch });
+
       // Get the SHA of the base branch
       const baseRef = await this.octokit.rest.git.getRef({
         owner: this.owner,
@@ -176,11 +198,17 @@ export class GitHubClient {
         sha,
       });
 
-      logger.info('Branch created successfully', { branchName });
+      logger.info("Branch created successfully", { branchName });
       return branchName;
     } catch (error) {
-      logger.error('Failed to create branch', { branchName, baseBranch, error });
-      throw new Error(`Failed to create branch ${branchName}: ${this.getErrorMessage(error)}`);
+      logger.error("Failed to create branch", {
+        branchName,
+        baseBranch,
+        error,
+      });
+      throw new Error(
+        `Failed to create branch ${branchName}: ${this.getErrorMessage(error)}`,
+      );
     }
   }
 
@@ -193,19 +221,66 @@ export class GitHubClient {
 
       return response.data.default_branch;
     } catch (error) {
-      logger.error('Failed to get default branch', { error });
-      throw new Error(`Failed to get default branch: ${this.getErrorMessage(error)}`);
+      logger.error("Failed to get default branch", { error });
+      throw new Error(
+        `Failed to get default branch: ${this.getErrorMessage(error)}`,
+      );
     }
   }
 
-  verifyWebhookSignature(payload: string, signature: string): boolean {
-    const hmac = crypto.createHmac('sha256', config.github.webhookSecret);
-    const digest = hmac.update(payload).digest('hex');
+  async findRemediationPullRequest(
+    branch: string,
+    base: string,
+  ): Promise<GitHubPullRequest> {
+    const matches = await this.octokit.rest.pulls.list({
+      owner: this.owner,
+      repo: this.repo,
+      state: "open",
+      head: `${this.owner}:${branch}`,
+      base,
+    });
+    if (matches.data.length !== 1)
+      throw new Error("Expected one remediation PR");
+    const { data: pr } = await this.octokit.rest.pulls.get({
+      owner: this.owner,
+      repo: this.repo,
+      pull_number: matches.data[0].number,
+    });
+    const repository = `${this.owner}/${this.repo}`.toLowerCase();
+    if (
+      pr.state !== "open" ||
+      pr.draft ||
+      pr.changed_files < 1 ||
+      pr.head.ref !== branch ||
+      pr.base.ref !== base ||
+      pr.head.repo?.full_name.toLowerCase() !== repository ||
+      pr.base.repo.full_name.toLowerCase() !== repository
+    ) {
+      throw new Error(
+        "Remediation PR has no changes or unexpected state/target",
+      );
+    }
+    return pr as GitHubPullRequest;
+  }
+
+  verifyWebhookSignature(
+    payload: string | Buffer,
+    signature: string | undefined,
+  ): boolean {
+    if (
+      !config.github.webhookSecret ||
+      !signature ||
+      !/^sha256=[a-f0-9]{64}$/.test(signature)
+    ) {
+      return false;
+    }
+    const hmac = crypto.createHmac("sha256", config.github.webhookSecret);
+    const digest = hmac.update(payload).digest("hex");
     const expectedSignature = `sha256=${digest}`;
-    
+
     return crypto.timingSafeEqual(
       Buffer.from(signature),
-      Buffer.from(expectedSignature)
+      Buffer.from(expectedSignature),
     );
   }
 
@@ -216,7 +291,7 @@ export class GitHubClient {
     if (error?.message) {
       return error.message;
     }
-    return 'Unknown error';
+    return "Unknown error";
   }
 }
 

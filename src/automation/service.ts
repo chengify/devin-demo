@@ -1,229 +1,150 @@
-import { devinClient, CreateSessionRequest } from '../devin/client';
-import { githubClient, GitHubIssue } from '../github/client';
-import { metricsTracker } from '../observability/metrics';
-import { getLogger } from '../observability/logger';
-import { config } from '../config';
+import { randomUUID } from "crypto";
+import { devinClient } from "../devin/client";
+import { githubClient, GitHubIssue } from "../github/client";
+import { metricsTracker } from "../observability/metrics";
+import { getLogger } from "../observability/logger";
+import { config } from "../config";
 
-const logger = getLogger('automation-service');
+const logger = getLogger("automation-service");
 
 export class AutomationService {
-  async processIssue(issueNumber: number): Promise<void> {
-    logger.info('Starting to process issue', { issueNumber });
-    
+  private activeIssues = new Set<number>();
+
+  constructor(
+    private devin = devinClient,
+    private github = githubClient,
+    private metrics = metricsTracker,
+  ) {}
+
+  scheduleIssue(issueNumber: number): "accepted" | "duplicate" | "busy" {
+    if (this.activeIssues.has(issueNumber)) return "duplicate";
+    if (this.activeIssues.size >= config.automation.maxConcurrentSessions)
+      return "busy";
+    this.activeIssues.add(issueNumber);
+    void this.runIssue(issueNumber).finally(() =>
+      this.activeIssues.delete(issueNumber),
+    );
+    return "accepted";
+  }
+
+  private async notify(issueNumber: number, message: string): Promise<void> {
     try {
-      // Fetch issue details
-      const issue = await githubClient.getIssue(issueNumber);
-      logger.info('Issue fetched successfully', { 
-        issueNumber, 
-        title: issue.title,
-        labels: issue.labels.map(l => l.name)
-      });
-
-      // Check if issue has the automation label
-      const hasAutoLabel = issue.labels.some(l => l.name === config.automation.autoLabel);
-      if (!hasAutoLabel) {
-        logger.info('Issue does not have automation label, skipping', { issueNumber });
-        return;
-      }
-
-      // Check if issue is already closed
-      if (issue.state === 'closed') {
-        logger.info('Issue is already closed, skipping', { issueNumber });
-        return;
-      }
-
-      // Record the issue type based on labels
-      const issueType = this.determineIssueType(issue);
-      metricsTracker.recordIssueType(issueType);
-      metricsTracker.incrementTotalIssues();
-
-      // Add initial comment to the issue
-      await githubClient.addIssueComment(
-        issueNumber,
-        `🤖 **Devin Automation Started**\n\nI'm starting to work on this issue. You can track progress in the Devin dashboard.\n\nIssue: ${issue.html_url}`
-      );
-
-      // Create Devin session
-      const prompt = this.generatePrompt(issue);
-      const sessionRequest: CreateSessionRequest = {
-        prompt,
-      };
-
-      metricsTracker.incrementActiveSessions();
-      const startTime = Date.now();
-
-      const session = await devinClient.createSession(sessionRequest);
-      
-      logger.info('Devin session created', { 
-        sessionId: session.id,
-        issueNumber 
-      });
-
-      // Update issue comment with session info
-      await githubClient.addIssueComment(
-        issueNumber,
-        `🚀 **Devin Session Created**\n\nSession ID: ${session.id}\nStatus: ${session.status}\n\nI'll update you when the session completes.`
-      );
-
-      // Wait for session completion
-      const completedSession = await devinClient.waitForSessionCompletion(
-        session.id,
-        config.automation.sessionTimeoutMinutes * 60 * 1000
-      );
-
-      const duration = Date.now() - startTime;
-
-      if (completedSession.status === 'completed') {
-        logger.info('Devin session completed successfully', { 
-          sessionId: session.id,
-          duration 
-        });
-
-        metricsTracker.incrementSuccessfulSessions(duration);
-        metricsTracker.addActivity({
-          timestamp: new Date().toISOString(),
-          issueNumber,
-          issueTitle: issue.title,
-          status: 'completed',
-          duration,
-          sessionId: session.id,
-        });
-
-        // Create a pull request if Devin made changes
-        await this.handleSuccessfulCompletion(issue, completedSession);
-
-        // Close the issue
-        await githubClient.closeIssue(issueNumber);
-
-        await githubClient.addIssueComment(
-          issueNumber,
-          `✅ **Issue Resolved**\n\nDevin successfully completed the remediation in ${Math.round(duration / 1000)}s.\n\nA pull request has been created with the changes.`
-        );
-
-      } else {
-        logger.error('Devin session failed', { 
-          sessionId: session.id,
-          error: completedSession.error 
-        });
-
-        metricsTracker.incrementFailedSessions();
-        metricsTracker.addActivity({
-          timestamp: new Date().toISOString(),
-          issueNumber,
-          issueTitle: issue.title,
-          status: 'failed',
-          duration,
-          sessionId: session.id,
-        });
-
-        await githubClient.addIssueComment(
-          issueNumber,
-          `❌ **Automation Failed**\n\nDevin encountered an error:\n\`\`\`\n${completedSession.error || 'Unknown error'}\n\`\`\`\n\nPlease review and consider manual intervention.`
-        );
-      }
-
+      await this.github.addIssueComment(issueNumber, message);
     } catch (error) {
-      logger.error('Failed to process issue', { issueNumber, error });
-      
-      metricsTracker.incrementFailedSessions();
-      metricsTracker.addActivity({
+      // Notification failures must not change the task outcome or abandon polling.
+      logger.warn("Issue notification failed", { issueNumber, error });
+    }
+  }
+
+  private async runIssue(issueNumber: number): Promise<void> {
+    let started = false;
+    let issueTitle = "Unknown";
+    let sessionId: string | undefined;
+    const startTime = Date.now();
+    try {
+      const issue = await this.github.getIssue(issueNumber);
+      issueTitle = issue.title;
+      if (
+        issue.state !== "open" ||
+        !issue.labels.some(
+          (label) => label.name === config.automation.autoLabel,
+        )
+      )
+        return;
+
+      started = true;
+      this.metrics.incrementTotalIssues();
+      this.metrics.recordIssueType(this.determineIssueType(issue));
+      this.metrics.incrementActiveSessions();
+      const branch = `devin-issue-${issueNumber}-${randomUUID()}`;
+      const base = await this.github.getDefaultBranch();
+      const session = await this.devin.createSession({
+        prompt: this.generatePrompt(issue, branch, base),
+      });
+      sessionId = session.id;
+      this.metrics.addActivity({
         timestamp: new Date().toISOString(),
         issueNumber,
-        issueTitle: 'Unknown',
-        status: 'failed',
+        issueTitle,
+        status: "started",
+        sessionId,
       });
-
-      // Try to notify about the failure
-      try {
-        await githubClient.addIssueComment(
-          issueNumber,
-          `❌ **Automation Error**\n\nAn unexpected error occurred while processing this issue:\n\`\`\`\n${error instanceof Error ? error.message : 'Unknown error'}\n\`\`\`\n\nPlease check the logs for more details.`
+      await this.notify(issueNumber, `Devin session started: ${sessionId}`);
+      const result = await this.devin.waitForSessionCompletion(
+        sessionId,
+        config.automation.sessionTimeoutMinutes * 60 * 1000,
+      );
+      if (result.status !== "completed") {
+        throw new Error(
+          result.error || `Session ended with status: ${result.status}`,
         );
-      } catch (commentError) {
-        logger.error('Failed to add error comment to issue', { issueNumber, error: commentError });
       }
+
+      const pr = await this.github.findRemediationPullRequest(branch, base);
+      const duration = Date.now() - startTime;
+      this.metrics.incrementSuccessfulSessions(duration);
+      this.metrics.addActivity({
+        timestamp: new Date().toISOString(),
+        issueNumber,
+        issueTitle,
+        status: "pr_ready",
+        duration,
+        sessionId,
+        prUrl: pr.html_url,
+        validation: "unverified",
+      });
+      await this.notify(
+        issueNumber,
+        `PR ready for review: ${pr.html_url}\n\nValidation: unverified by this service. Review the test evidence in the PR. This issue remains open pending review and merge.`,
+      );
+    } catch (error) {
+      logger.error("Issue processing failed", { issueNumber, error });
+      // Fetch failures occur before any session/task is counted.
+      if (started) this.metrics.incrementFailedSessions();
+      this.metrics.addActivity({
+        timestamp: new Date().toISOString(),
+        issueNumber,
+        issueTitle,
+        status: "failed",
+        sessionId,
+        duration: Date.now() - startTime,
+      });
+      await this.notify(
+        issueNumber,
+        "Automation could not produce a verified reviewable PR. The issue remains open; check the service logs and Devin session.",
+      );
+    } finally {
+      if (started) this.metrics.decrementActiveSessions();
     }
   }
 
   private determineIssueType(issue: GitHubIssue): string {
-    const labelNames = issue.labels.map(l => l.name.toLowerCase());
-    
-    if (labelNames.includes('security')) return 'security';
-    if (labelNames.includes('code-quality')) return 'code-quality';
-    if (labelNames.includes('dependency')) return 'dependency';
-    if (labelNames.includes('bug')) return 'bug';
-    if (labelNames.includes('enhancement')) return 'enhancement';
-    
-    return 'other';
+    const labels = issue.labels.map((label) => label.name.toLowerCase());
+    return (
+      ["security", "code-quality", "dependency", "bug", "enhancement"].find(
+        (type) => labels.includes(type),
+      ) || "other"
+    );
   }
 
-  private generatePrompt(issue: GitHubIssue): string {
-    return `Please fix the issue described in GitHub issue #${issue.number}:
-
-Title: ${issue.title}
-Description: ${issue.body || 'No description provided'}
+  private generatePrompt(
+    issue: GitHubIssue,
+    branch: string,
+    base: string,
+  ): string {
+    return `Remediate issue #${issue.number} in https://github.com/${config.github.repoOwner}/${config.github.repoName}.
 Issue URL: ${issue.html_url}
+Title: ${issue.title}
+Description:
+${issue.body || "No description provided"}
 
-Context:
-- This is an Apache Superset repository fork
-- Follow the coding standards and conventions in the AGENTS.md file
-- Run pre-commit hooks before finalizing changes
-- Add proper type hints for Python code
-- Follow the existing code style and patterns
-- Ensure all tests pass after making changes
-
-Please:
-1. Analyze the issue and understand what needs to be fixed
-2. Implement the fix following best practices
-3. Run relevant tests to ensure the fix works
-4. Run pre-commit hooks to ensure code quality
-5. Create a commit with a descriptive message following conventional commits format
-6. If you make changes, push them to a new branch
-
-The repository is already checked out. Start by examining the relevant files and understanding the issue.`;
-  }
-
-  private async handleSuccessfulCompletion(issue: GitHubIssue, session: any): Promise<void> {
-    logger.info('Handling successful session completion', { 
-      issueNumber: issue.number,
-      sessionId: session.id 
-    });
-
-    try {
-      // In a real implementation, we would:
-      // 1. Check if Devin made any changes
-      // 2. Create a new branch
-      // 3. Create a pull request with the changes
-      
-      // For this demo, we'll create a simple PR
-      const defaultBranch = await githubClient.getDefaultBranch();
-      const branchName = `devin-automation-issue-${issue.number}`;
-      
-      // Create a branch (this would fail if no changes were made, but that's okay for demo)
-      try {
-        await githubClient.createBranch(branchName, defaultBranch);
-        
-        await githubClient.createPullRequest({
-          title: `Fix issue #${issue.number}: ${issue.title}`,
-          body: `This PR fixes issue #${issue.number}.\n\nAutomated by Devin AI.\n\nDevin Session: ${session.id}\n\n---\n\n${issue.body || ''}`,
-          head: branchName,
-          base: defaultBranch,
-        });
-        
-        logger.info('Pull request created successfully', { issueNumber: issue.number });
-      } catch (branchError) {
-        logger.warn('Could not create branch/PR (likely no changes made)', { 
-          issueNumber: issue.number,
-          error: branchError 
-        });
-      }
-      
-    } catch (error) {
-      logger.error('Failed to handle successful completion', { 
-        issueNumber: issue.number,
-        error 
-      });
-    }
+Clone or locate this exact fork. Follow its AGENTS.md and coding conventions.
+Start from base branch "${base}" and use the unique branch "${branch}".
+Investigate the issue, implement a bounded fix, and run relevant tests and checks.
+Push your changes to this fork and open a non-draft PR targeting "${base}".
+Include the issue URL, changes, exact validation commands/results, and checks not run in the PR body.
+Do not merge the PR or close the issue. Do not modify the upstream Apache repository.
+If blocked or unable to validate, report the limitation honestly rather than claiming success.`;
   }
 }
 

@@ -1,8 +1,8 @@
-import * as fs from 'fs';
-import * as path from 'path';
-import { getLogger } from './logger';
+import * as fs from "fs";
+import * as path from "path";
+import { getLogger } from "./logger";
 
-const logger = getLogger('metrics');
+const logger = getLogger("metrics");
 
 interface Metrics {
   totalIssuesProcessed: number;
@@ -19,30 +19,32 @@ interface ActivityEntry {
   timestamp: string;
   issueNumber: number;
   issueTitle: string;
-  status: 'started' | 'completed' | 'failed';
+  status: "started" | "completed" | "pr_ready" | "failed";
+  prUrl?: string;
+  validation?: "unverified";
   duration?: number;
   sessionId?: string;
 }
 
-const METRICS_FILE = path.join(process.cwd(), 'logs', 'metrics.json');
+const METRICS_FILE = path.join(process.cwd(), "logs", "metrics.json");
 
-class MetricsTracker {
+export class MetricsTracker {
   private metrics: Metrics;
 
-  constructor() {
+  constructor(private metricsFile = METRICS_FILE) {
     this.metrics = this.loadMetrics();
   }
 
   private loadMetrics(): Metrics {
     try {
-      if (fs.existsSync(METRICS_FILE)) {
-        const data = fs.readFileSync(METRICS_FILE, 'utf-8');
+      if (fs.existsSync(this.metricsFile)) {
+        const data = fs.readFileSync(this.metricsFile, "utf-8");
         return JSON.parse(data);
       }
     } catch (error) {
-      logger.error('Failed to load metrics file', { error });
+      logger.error("Failed to load metrics file", { error });
     }
-    
+
     return this.getInitialMetrics();
   }
 
@@ -61,15 +63,15 @@ class MetricsTracker {
 
   private saveMetrics(): void {
     try {
-      const logsDir = path.dirname(METRICS_FILE);
+      const logsDir = path.dirname(this.metricsFile);
       if (!fs.existsSync(logsDir)) {
         fs.mkdirSync(logsDir, { recursive: true });
       }
-      
+
       this.metrics.lastUpdateTime = new Date().toISOString();
-      fs.writeFileSync(METRICS_FILE, JSON.stringify(this.metrics, null, 2));
+      fs.writeFileSync(this.metricsFile, JSON.stringify(this.metrics, null, 2));
     } catch (error) {
-      logger.error('Failed to save metrics file', { error });
+      logger.error("Failed to save metrics file", { error });
     }
   }
 
@@ -80,19 +82,20 @@ class MetricsTracker {
 
   incrementSuccessfulSessions(duration?: number): void {
     this.metrics.successfulSessions++;
-    this.metrics.activeSessions--;
-    
+
     if (duration) {
-      const totalDuration = this.metrics.averageSessionDuration * (this.metrics.successfulSessions - 1);
-      this.metrics.averageSessionDuration = (totalDuration + duration) / this.metrics.successfulSessions;
+      const totalDuration =
+        this.metrics.averageSessionDuration *
+        (this.metrics.successfulSessions - 1);
+      this.metrics.averageSessionDuration =
+        (totalDuration + duration) / this.metrics.successfulSessions;
     }
-    
+
     this.saveMetrics();
   }
 
   incrementFailedSessions(): void {
     this.metrics.failedSessions++;
-    this.metrics.activeSessions--;
     this.saveMetrics();
   }
 
@@ -101,8 +104,14 @@ class MetricsTracker {
     this.saveMetrics();
   }
 
+  decrementActiveSessions(): void {
+    this.metrics.activeSessions = Math.max(0, this.metrics.activeSessions - 1);
+    this.saveMetrics();
+  }
+
   recordIssueType(type: string): void {
-    this.metrics.issuesByType[type] = (this.metrics.issuesByType[type] || 0) + 1;
+    this.metrics.issuesByType[type] =
+      (this.metrics.issuesByType[type] || 0) + 1;
     this.saveMetrics();
   }
 

@@ -4,17 +4,17 @@ An event-driven issue remediation prototype for an Apache Superset fork. The int
 
 ## Current status
 
-This is a scaffold, not yet a demonstrated end-to-end remediation system. Local review on September 9, 2026 confirmed that TypeScript checking passes. Live Devin integration, successful remediation, and Docker execution remain unverified.
+This is a prototype, not yet a demonstrated end-to-end remediation system. Local regression tests, TypeScript compilation, and lint pass. Live Devin integration and successful remediation remain unverified.
 
 | Component | Current state |
 | --- | --- |
-| Express | Issue webhook, health, and JSON status routes are implemented. |
+| Express | Raw-body signature verification, event filtering, process-local deduplication, health, and JSON status routes are implemented. |
 | Devin client | Session creation, polling, and cancellation code exists; the API contract and lifecycle assumptions need verification. |
 | GitHub client | Issue reads/comments, branch/PR creation, and issue closure methods exist. |
-| Remediation handoff | Incomplete: PR logic branches from the default branch instead of using Devin's changes. |
-| Observability | Winston logs and persisted aggregate metrics exist; counts are not yet reliable remediation evidence. |
-| Docker | Configuration exists but has build blockers. |
-| Validation | Type checking passes; lint configuration and a working test setup are missing. |
+| Remediation handoff | Prompts assign a unique branch; GitHub verification requires an open, non-draft PR with changes in the intended fork and base. Live handoff remains unverified. |
+| Observability | PR readiness and unverified validation are reported separately; notification failures no longer change outcomes. Restart recovery remains incomplete. |
+| Docker | Multi-stage build compiles source and installs dependencies from the lockfile. See Docker status below for verification. |
+| Validation | Compilation, lint, and eight regression tests pass. |
 
 ## Workflow and architecture
 
@@ -55,7 +55,7 @@ The scaffold receives issue events, fetches the configured repository's issue, c
 
 ### Components and boundaries
 
-Solid arrows represent integration paths present in the scaffold, not verified live behavior. Dashed arrows represent planned work. The service's Docker packaging still requires repair.
+Solid arrows represent integration paths present in the code, not verified live behavior. Dashed arrows represent planned work or the unverified external remediation handoff.
 
 ```mermaid
 flowchart LR
@@ -71,7 +71,7 @@ flowchart LR
         metrics["Logs and aggregate metrics"]
         status["GET /status - JSON"]
         tasks["Planned: durable task records"]
-        verify["Planned: PR and validation verification"]
+        verify["PR verification; tests unverified"]
     end
 
     github -->|Issue events| webhook
@@ -85,18 +85,19 @@ flowchart LR
     status --> reviewer
     automation -.-> tasks
     devin -.->|Push fix and open PR| github
-    automation -.-> verify
-    verify -.->|Check PR and test evidence| github
+    automation --> verify
+    verify -->|Check PR target and changes| github
+    verify --> metrics
     verify -.-> tasks
     tasks -.-> status
     github -.->|Remediation PR for human review| reviewer
 ```
 
-The existing placeholder PR branch logic is omitted from the intended handoff above; it must be replaced with Devin's actual changes.
+The placeholder branch creation has been removed. The service discovers Devin's PR through the unique branch assigned to the run, using GitHub's [pull request API](https://docs.github.com/en/rest/pulls/pulls#list-pull-requests). It does not infer passing tests from the presence of a PR.
 
 ### Target execution flow
 
-This sequence describes the intended completed system. Deduplication, durable state, execution limits, and verified PR reporting remain implementation work.
+This sequence describes the intended completed system. Durable task state, spending limits, and test/check verification remain implementation work. Current deduplication and concurrency controls operate within one process.
 
 ```mermaid
 sequenceDiagram
@@ -140,7 +141,7 @@ The stack is Node.js 20+, TypeScript, Express, Axios, Octokit, Winston, and dote
 From this repository's root:
 
 ```bash
-npm install
+npm ci
 cp .env.example .env
 # Edit .env with your configuration.
 npm run typecheck
@@ -175,39 +176,43 @@ These describe the current implementation, including API defaults still requirin
 | `GITHUB_WEBHOOK_SECRET` | Webhook signing secret | Empty; startup warning |
 | `PORT` | HTTP port | `3000` |
 | `NODE_ENV` | Environment/logging behavior | `development` |
-| `AUTO_LABEL` | Automation eligibility label | `devin-automation`; currently hard-coded separately in the webhook handler |
+| `AUTO_LABEL` | Automation eligibility label | `devin-automation` |
 | `SESSION_TIMEOUT_MINUTES` | Polling timeout | `30` |
-| `MAX_CONCURRENT_SESSIONS` | Intended concurrency limit | `3`; not enforced |
+| `MAX_CONCURRENT_SESSIONS` | Concurrent issue-processing limit | `3`; enforced within one process |
 
 ### Docker status
 
-Docker is required for the final deliverable, but the current configuration is not ready:
+The Dockerfile installs locked dependencies, compiles TypeScript in a build stage, and copies the output into a runtime image containing production dependencies. Local `dist` is deliberately excluded. The dependency lockfile is included in version control.
 
-- The Dockerfile copies `dist`, while `.dockerignore` excludes it and the image does not compile source.
-- `npm ci` requires a lockfile, but `package-lock.json` is ignored by Git, preventing a reproducible fresh-checkout build.
+```bash
+docker compose up --build
+```
 
-The planned repair installs locked dependencies and compiles TypeScript within the Docker build. After repair and verification, the intended command is `docker compose up --build`. It is not yet a working quick start.
+The image build passed, and `/health` and `/status` returned 200 in a temporary network-isolated container. Live credentials and repository access are still needed to process real events. Compose with live configuration has not been exercised.
 
 ### Webhook status
 
 The intended configuration uses the fork's **Issues** events, JSON content type, the shared signing secret, and `https://<service-host>/webhook/github`. Adding the automation label should select an issue for processing.
 
-Fix the gaps below before enabling live events. The current handler can trigger paid sessions and issue updates, including premature issue closure.
+The handler verifies the original signed bytes, the repository, open issue state, and configured label. For label events, the specific label added must match. It requires `X-GitHub-Delivery` and remembers up to 10,000 accepted deliveries for 24 hours in memory. Overlapping runs for the same issue are suppressed. At capacity it returns 503 without recording the delivery: manually redeliver after capacity is available; no automatic retry queue is implemented. Restarting clears replay protection and does not resume monitoring.
+
+Verify the Devin API contract before enabling live events. Real events can initiate paid sessions and post issue comments, but the service no longer closes issues automatically.
 
 ## Known gaps
 
-1. **Actual PR handoff:** Replace placeholder branch creation with Devin's real PR. Explicitly identify the fork and PR requirements in the prompt instead of assuming the repository is checked out. Verify the PR targets the fork and contains changes.
-2. **Accurate outcomes:** Remove issue closure on session completion. Track PR readiness and validation separately. Currently PR creation errors can be swallowed while the issue is reported resolved.
-3. **Event handling:** Verify signatures against original request bytes, validate the repository and specific label added, and deduplicate deliveries and overlapping issue runs.
-4. **Session controls:** Verify the API contract, enforce concurrency, and handle blocked/terminal states. Apply a spending limit if supported by the selected API. Polling currently retries errors at a fixed interval; exponential backoff is not implemented.
-5. **Durable tasks:** Persist issue/session identifiers, timestamps, state, PR links, and validation evidence; resume monitoring after restart. Derive metrics from records to prevent negative active counts and double-counted outcomes.
-6. **Reproducible execution:** Repair Docker and lint configuration, add focused tests, and implement an explicitly labeled simulation without external credentials.
+1. **Live integration:** Verify the Devin API contract and demonstrate a real session producing a PR. The current lifecycle assumptions remain unverified.
+2. **Validation evidence:** PR readiness is checked, but test results are explicitly `unverified`. Add CI/test evidence before claiming a validated remediation.
+3. **Session controls:** Handle blocked/terminal states against the verified API and apply a supported spending limit. Polling currently retries all errors at a fixed interval. A polling/stop failure can release local capacity while remote work continues; the current limit controls local tasks, not guaranteed remote spend.
+4. **Durable tasks:** Persist recoverable task records and delivery IDs, resume monitoring after restart, and derive aggregates from records. Existing metrics files can contain stale counts from previous runs; corrected accounting applies to newly processed tasks and does not repair historical data.
+5. **Simulation:** Provide a user-facing credential-free simulation. Regression tests use fake clients but are not yet a complete demo command.
 
 Logs are written to `logs/combined.log` and `logs/error.log`; aggregate metrics are saved in `logs/metrics.json`. Log rotation is not implemented. Running sessions are not stored as recoverable task records.
 
+For new runs, `successfulSessions` means a completed session with a verified reviewable PR, not passing tests or a merged fix. `activeSessions` counts eligible tasks from preparation through PR verification. Failures fetching an issue before task creation appear in activity but do not increment session counters. Final activity includes the PR URL and `validation: unverified` where applicable.
+
 ## Candidate Superset issues
 
-The local Superset checkout points to `chengify/superset`. Earlier notes report issues #1–4; their remote existence and current state have not been independently verified in this review.
+The local Superset checkout points to `chengify/superset`. [Issues #1–4](https://github.com/chengify/superset/issues) were verified on September 9, 2026: all were open and had no labels at that time.
 
 | Candidate | Required refinement |
 | --- | --- |
@@ -225,9 +230,10 @@ Local checks observed on September 9, 2026:
 | Command | Result |
 | --- | --- |
 | `npm run typecheck` | Passed. |
-| `npm run lint` | Failed: ESLint configuration missing. |
-| `npm test -- --runInBand` | Failed: Jest is not installed. |
-| Docker and live issue-to-PR execution | Not verified. |
+| `npm run lint` | Passed. |
+| `npm test` | Passed: eight Node.js regression tests, including build. No external API calls. |
+| Docker build and container smoke check | Passed; `/health` and `/status` returned 200. |
+| Live issue-to-PR execution | Not verified. |
 
 ```text
 src/index.ts                 Express routes and startup
@@ -237,8 +243,9 @@ src/automation/service.ts    Issue/session orchestration
 src/devin/client.ts          Devin HTTP client and polling
 src/github/client.ts         GitHub operations and signature helper
 src/observability/           Logging and aggregate metrics
-Dockerfile                   Container scaffold requiring repair
+Dockerfile                   Multi-stage build and runtime image
 docker-compose.yml           Service configuration
+tests/workflow.test.cjs       Webhook, orchestration, and PR regression tests
 ```
 
 ## Demo and submission
