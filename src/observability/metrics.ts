@@ -8,6 +8,7 @@ interface Metrics {
   totalIssuesProcessed: number;
   successfulSessions: number;
   failedSessions: number;
+  blockedSessions: number;
   activeSessions: number;
   averageSessionDuration: number;
   lastUpdateTime: string;
@@ -19,7 +20,9 @@ interface ActivityEntry {
   timestamp: string;
   issueNumber: number;
   issueTitle: string;
-  status: "started" | "completed" | "pr_ready" | "failed";
+  status: "started" | "completed" | "pr_ready" | "failed" | "blocked";
+  sessionUrl?: string;
+  reason?: string;
   prUrl?: string;
   validation?: "unverified";
   duration?: number;
@@ -39,7 +42,7 @@ export class MetricsTracker {
     try {
       if (fs.existsSync(this.metricsFile)) {
         const data = fs.readFileSync(this.metricsFile, "utf-8");
-        return JSON.parse(data);
+        return { ...this.getInitialMetrics(), ...JSON.parse(data) };
       }
     } catch (error) {
       logger.error("Failed to load metrics file", { error });
@@ -53,6 +56,7 @@ export class MetricsTracker {
       totalIssuesProcessed: 0,
       successfulSessions: 0,
       failedSessions: 0,
+      blockedSessions: 0,
       activeSessions: 0,
       averageSessionDuration: 0,
       lastUpdateTime: new Date().toISOString(),
@@ -96,6 +100,27 @@ export class MetricsTracker {
 
   incrementFailedSessions(): void {
     this.metrics.failedSessions++;
+    this.saveMetrics();
+  }
+
+  reclassifyFailedAsSuccessful(duration?: number): void {
+    if (this.metrics.failedSessions < 1) {
+      throw new Error("No failed session is available to reclassify");
+    }
+    this.metrics.failedSessions--;
+    this.metrics.successfulSessions++;
+    if (duration) {
+      const previousTotal =
+        this.metrics.averageSessionDuration *
+        (this.metrics.successfulSessions - 1);
+      this.metrics.averageSessionDuration =
+        (previousTotal + duration) / this.metrics.successfulSessions;
+    }
+    this.saveMetrics();
+  }
+
+  incrementBlockedSessions(): void {
+    this.metrics.blockedSessions++;
     this.saveMetrics();
   }
 

@@ -6,8 +6,8 @@ const { tmpdir } = require('node:os');
 const path = require('node:path');
 
 // Explicit fake configuration prevents tests from using local credentials.
-process.env.DEVIN_API_KEY = 'test-key';
-process.env.DEVIN_ORG_ID = 'test-org';
+process.env.DEVIN_API_KEY = 'cog_test-key';
+process.env.DEVIN_ORG_ID = 'org-test';
 process.env.GITHUB_TOKEN = 'test-token';
 process.env.GITHUB_WEBHOOK_SECRET = 'test-secret';
 process.env.GITHUB_REPO_OWNER = 'test-owner';
@@ -86,7 +86,8 @@ test('unrelated labels, repositories, and closed issues do not schedule work', a
 const issue = { number: 1, title: 'Fix a bug', body: 'Description', state: 'open',
   labels: [{ name: 'fix-me' }], html_url: 'https://github.com/test-owner/test-repo/issues/1' };
 let run = 0;
-function harness({ fetchFails = false, createFails = false, prFails = false, notifyFails = false, sessionStatus = 'completed' } = {}) {
+function harness({ fetchFails = false, createFails = false, prFails = false, notifyFails = false,
+  sessionStatus = 'exit', statusDetail, sessionPullRequests = [] } = {}) {
   const metrics = new MetricsTracker(path.join(directory, `metrics-${++run}.json`));
   const comments = [];
   const github = {
@@ -107,9 +108,11 @@ function harness({ fetchFails = false, createFails = false, prFails = false, not
       assert.match(prompt, /devin-issue-1-/);
       assert.match(prompt, /test-owner\/test-repo/);
       if (createFails) throw new Error('create failed');
-      return { id: 'test-session' };
+      return { session_id: 'devin-test', url: 'https://app.devin.ai/sessions/devin-test' };
     },
-    waitForSessionCompletion: async () => { await completion; return { status: sessionStatus }; },
+    waitForSessionCompletion: async () => { await completion; return {
+      status: sessionStatus, status_detail: statusDetail, pull_requests: sessionPullRequests,
+    }; },
   };
   return { service: new AutomationService(devin, github, metrics), metrics, comments, release };
 }
@@ -142,13 +145,13 @@ test('completion without a PR is failure and leaves the issue open', async () =>
   assert.equal(m.activeSessions, 0);
 });
 test('notification failures do not double-count outcomes or interrupt polling', async () => {
-  for (const sessionStatus of ['completed', 'failed']) {
+  for (const sessionStatus of ['exit', 'error']) {
     const h = harness({ notifyFails: true, sessionStatus });
     h.service.scheduleIssue(1); h.release(); await settle(h.service);
     const m = h.metrics.getMetrics();
     assert.equal(m.successfulSessions + m.failedSessions, 1);
     assert.equal(m.activeSessions, 0);
-    assert.equal(m.successfulSessions, sessionStatus === 'completed' ? 1 : 0);
+    assert.equal(m.successfulSessions, sessionStatus === 'exit' ? 1 : 0);
   }
 });
 test('pre-session failures never produce negative active counts', async () => {
@@ -160,6 +163,36 @@ test('pre-session failures never produce negative active counts', async () => {
     assert.equal(m.successfulSessions, 0);
     assert.equal(m.failedSessions, options.fetchFails ? 0 : 1);
   }
+});
+test('waiting for input is reported as blocked with a session link', async () => {
+  const h = harness({ sessionStatus: 'running', statusDetail: 'waiting_for_user' });
+  h.service.scheduleIssue(1); h.release(); await settle(h.service);
+  const m = h.metrics.getMetrics();
+  assert.equal(m.blockedSessions, 1);
+  assert.equal(m.failedSessions, 0);
+  assert.equal(m.successfulSessions, 0);
+  assert.equal(m.activeSessions, 0);
+  assert.equal(m.recentActivity[0].reason, 'waiting_for_user');
+  assert.match(m.recentActivity[0].sessionUrl, /devin-test$/);
+});
+test('waiting for review after opening a PR is treated as a reviewable handoff', async () => {
+  const h = harness({ sessionStatus: 'running', statusDetail: 'waiting_for_user',
+    sessionPullRequests: [{ pr_url: 'https://github.com/test-owner/test-repo/pull/2', pr_state: 'open' }] });
+  h.service.scheduleIssue(1); h.release(); await settle(h.service);
+  const m = h.metrics.getMetrics();
+  assert.equal(m.successfulSessions, 1);
+  assert.equal(m.blockedSessions, 0);
+  assert.equal(m.recentActivity[0].status, 'pr_ready');
+});
+test('a false failed outcome can be reconciled as one successful session', () => {
+  const metrics = new MetricsTracker(path.join(directory, `metrics-${++run}.json`));
+  metrics.incrementFailedSessions();
+  metrics.reclassifyFailedAsSuccessful(1000);
+  const m = metrics.getMetrics();
+  assert.equal(m.failedSessions, 0);
+  assert.equal(m.successfulSessions, 1);
+  assert.equal(m.averageSessionDuration, 1000);
+  assert.throws(() => metrics.reclassifyFailedAsSuccessful(), /No failed session/);
 });
 test('PR verification rejects empty, draft, closed, or wrong-repository changes', async () => {
   const client = new GitHubClient();

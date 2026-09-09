@@ -7,6 +7,7 @@ export const config = {
     apiKey: process.env.DEVIN_API_KEY || "",
     orgId: process.env.DEVIN_ORG_ID || "",
     apiBaseUrl: process.env.DEVIN_API_BASE_URL || "https://api.devin.ai/v3",
+    maxAcuLimit: Number(process.env.DEVIN_MAX_ACU_LIMIT || "10"),
   },
   github: {
     token: process.env.GITHUB_TOKEN || "",

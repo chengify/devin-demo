@@ -11,7 +11,9 @@
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
     "format": "prettier --write \"src/**/*.ts\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "devin:check": "npm run build && node dist/devin/check.js",
+    "devin:recover": "npm run build && node dist/devin/recover.js"
   },
   "keywords": [
     "devin",

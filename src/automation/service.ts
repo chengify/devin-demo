@@ -1,5 +1,9 @@
 import { randomUUID } from "crypto";
-import { devinClient } from "../devin/client";
+import {
+  devinClient,
+  sessionOutcome,
+  SessionTimeoutError,
+} from "../devin/client";
 import { githubClient, GitHubIssue } from "../github/client";
 import { metricsTracker } from "../observability/metrics";
 import { getLogger } from "../observability/logger";
@@ -40,6 +44,7 @@ export class AutomationService {
     let started = false;
     let issueTitle = "Unknown";
     let sessionId: string | undefined;
+    let sessionUrl: string | undefined;
     const startTime = Date.now();
     try {
       const issue = await this.github.getIssue(issueNumber);
@@ -60,24 +65,47 @@ export class AutomationService {
       const base = await this.github.getDefaultBranch();
       const session = await this.devin.createSession({
         prompt: this.generatePrompt(issue, branch, base),
+        title: `Issue #${issueNumber}: ${issue.title}`,
+        repos: [
+          `https://github.com/${config.github.repoOwner}/${config.github.repoName}`,
+        ],
+        tags: ["devin-automation", `issue-${issueNumber}`],
       });
-      sessionId = session.id;
+      sessionId = session.session_id;
+      sessionUrl = session.url;
       this.metrics.addActivity({
         timestamp: new Date().toISOString(),
         issueNumber,
         issueTitle,
         status: "started",
         sessionId,
+        sessionUrl,
       });
-      await this.notify(issueNumber, `Devin session started: ${sessionId}`);
+      await this.notify(issueNumber, `Devin session started: ${sessionUrl}`);
       const result = await this.devin.waitForSessionCompletion(
         sessionId,
         config.automation.sessionTimeoutMinutes * 60 * 1000,
       );
-      if (result.status !== "completed") {
-        throw new Error(
-          result.error || `Session ended with status: ${result.status}`,
+      if (sessionOutcome(result) === "blocked") {
+        this.metrics.incrementBlockedSessions();
+        this.metrics.addActivity({
+          timestamp: new Date().toISOString(),
+          issueNumber,
+          issueTitle,
+          status: "blocked",
+          sessionId,
+          sessionUrl,
+          reason: result.status_detail || result.status,
+          duration: Date.now() - startTime,
+        });
+        await this.notify(
+          issueNumber,
+          `Devin needs attention (${result.status_detail || result.status}): ${sessionUrl}. Monitoring has stopped; inspect the session before resuming it.`,
         );
+        return;
+      }
+      if (sessionOutcome(result) !== "completed") {
+        throw new Error(`Session ended with status: ${result.status}`);
       }
 
       const pr = await this.github.findRemediationPullRequest(branch, base);
@@ -90,6 +118,7 @@ export class AutomationService {
         status: "pr_ready",
         duration,
         sessionId,
+        sessionUrl,
         prUrl: pr.html_url,
         validation: "unverified",
       });
@@ -107,11 +136,18 @@ export class AutomationService {
         issueTitle,
         status: "failed",
         sessionId,
+        sessionUrl,
+        reason:
+          error instanceof SessionTimeoutError
+            ? error.message
+            : sessionId
+              ? "Monitoring or PR verification failed; remote session state may be unknown."
+              : "Task preparation or session creation failed.",
         duration: Date.now() - startTime,
       });
       await this.notify(
         issueNumber,
-        "Automation could not produce a verified reviewable PR. The issue remains open; check the service logs and Devin session.",
+        `Automation could not produce a verified reviewable PR. The issue remains open. ${error instanceof SessionTimeoutError ? error.message : "Inspect the service logs and remote session before retrying."}${sessionUrl ? `\nSession: ${sessionUrl}` : ""}`,
       );
     } finally {
       if (started) this.metrics.decrementActiveSessions();

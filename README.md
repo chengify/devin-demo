@@ -1,26 +1,26 @@
 # Devin Automation Service
 
-An event-driven issue remediation prototype for an Apache Superset fork. The intended workflow turns selected GitHub issues into pull requests through the Devin API, with observable progress and validation evidence.
+An event-driven issue remediation service for an Apache Superset fork. A signed GitHub issue event starts and monitors a Devin API session, verifies the resulting pull request, and exposes progress and evidence for engineering reviewers.
 
 ## Current status
 
-This is a prototype, not yet a demonstrated end-to-end remediation system. Local regression tests, TypeScript compilation, and lint pass. Live Devin integration and successful remediation remain unverified.
+The workflow has been demonstrated end to end against `chengify/superset`: labeling issue #1 triggered a real Devin session and produced reviewable PR #5. The service reports the PR as ready while keeping its test validation explicitly unverified until independent CI or local confirmation exists.
 
 | Component | Current state |
 | --- | --- |
-| Express | Raw-body signature verification, event filtering, process-local deduplication, health, and JSON status routes are implemented. |
-| Devin client | Session creation, polling, and cancellation code exists; the API contract and lifecycle assumptions need verification. |
-| GitHub client | Issue reads/comments, branch/PR creation, and issue closure methods exist. |
-| Remediation handoff | Prompts assign a unique branch; GitHub verification requires an open, non-draft PR with changes in the intended fork and base. Live handoff remains unverified. |
-| Observability | PR readiness and unverified validation are reported separately; notification failures no longer change outcomes. Restart recovery remains incomplete. |
-| Docker | Multi-stage build compiles source and installs dependencies from the lockfile. See Docker status below for verification. |
-| Validation | Compilation, lint, and eight regression tests pass. |
+| Express | Verifies signatures from original request bytes, filters events, suppresses duplicate/overlapping work, and exposes health and JSON status routes. |
+| Devin client | Uses the live v3 contract, opaque session IDs, bounded GET retries, native lifecycle states, per-session ACU limits, and archived timeout termination. |
+| GitHub client | Reads issues, posts progress comments, verifies webhook signatures, and validates the resulting PR's repository, branch, base, state, and changed-file count. |
+| Remediation handoff | Verified live: issue #1 → Devin session → unique branch → open, non-draft PR #5 targeting `master`. |
+| Observability | Reports active/successful/blocked/failed counts plus issue, session, PR, timing, reason, and validation fields. Error diagnostics are sanitized. |
+| Docker | Live Compose service and public HTTPS webhook endpoint returned healthy responses during the demonstrated run. |
+| Validation | Compilation, lint, and 25 regression/contract tests pass. Devin's Superset results are captured separately from independent validation. |
 
 ## Workflow and architecture
 
 ### High-level overview
 
-This is the intended end-to-end architecture. The service scaffold exists; the live integration and actual remediation PR handoff still need completion and verification.
+This architecture was exercised by the verified issue #1 run. Durable task storage and independent CI ingestion remain future extensions.
 
 ```text
 +------------------+      +------------------------+      +------------------+
@@ -51,11 +51,11 @@ This is the intended end-to-end architecture. The service scaffold exists; the l
 
 The service starts and monitors Devin's work, then verifies and reports the resulting PR. Logs and metrics cover the workflow as a whole rather than only GitHub operations.
 
-The scaffold receives issue events, fetches the configured repository's issue, checks eligibility, creates a Devin session, polls it, and attempts GitHub updates.
+The service receives issue events, fetches the configured repository's issue, checks eligibility, creates and polls a Devin session, verifies its PR through GitHub, and posts the handoff result.
 
 ### Components and boundaries
 
-Solid arrows represent integration paths present in the code, not verified live behavior. Dashed arrows represent planned work or the unverified external remediation handoff.
+Solid arrows are implemented integration paths exercised by the live run. Dashed arrows are planned durability work.
 
 ```mermaid
 flowchart LR
@@ -84,50 +84,50 @@ flowchart LR
     metrics --> status
     status --> reviewer
     automation -.-> tasks
-    devin -.->|Push fix and open PR| github
+    devin -->|Push fix and open PR| github
     automation --> verify
     verify -->|Check PR target and changes| github
     verify --> metrics
     verify -.-> tasks
     tasks -.-> status
-    github -.->|Remediation PR for human review| reviewer
+    github -->|Remediation PR for human review| reviewer
 ```
 
 The placeholder branch creation has been removed. The service discovers Devin's PR through the unique branch assigned to the run, using GitHub's [pull request API](https://docs.github.com/en/rest/pulls/pulls#list-pull-requests). It does not infer passing tests from the presence of a PR.
 
 ### Target execution flow
 
-This sequence describes the intended completed system. Durable task state, spending limits, and test/check verification remain implementation work. Current deduplication and concurrency controls operate within one process.
+This sequence describes the implemented workflow. Aggregate metrics are persisted, but recoverable per-task state and independent test/check ingestion remain future work. New sessions receive a configurable ACU limit. Deduplication and concurrency controls operate within one process.
 
 ```mermaid
 sequenceDiagram
     actor Engineer
     participant GitHub as Superset fork
     participant Service as Automation service
-    participant Store as Task records
+    participant Metrics as Logs and status metrics
     participant Devin as Devin API / session
 
     Engineer->>GitHub: Add automation label to an issue
     GitHub->>Service: Deliver issue webhook
     Service->>Service: Verify signature, repository, label, and duplicates
-    Service->>Store: Persist accepted task
+    Service->>Metrics: Record accepted task
     Service-->>GitHub: Acknowledge delivery
     Service->>Devin: Start session within execution limits
     Devin-->>Service: Session ID and URL
-    Service->>Store: Save session identity and running state
+    Service->>Metrics: Record session identity and running state
     loop Until result, blockage, or timeout
         Service->>Devin: Poll session
         Devin-->>Service: Progress and available result
-        Service->>Store: Update task state
+        Service->>Metrics: Update aggregate state
     end
     alt Devin produces a remediation PR
         Note over Devin,GitHub: PR creation happens during Devin's work
-        Service->>GitHub: Verify reported PR, target, changes, and checks
-        Service->>Store: Record PR readiness and validation separately
+        Service->>GitHub: Verify PR target, state, and changes
+        Service->>Metrics: Record PR readiness and validation separately
         Service->>GitHub: Post PR link and validation summary
         Engineer->>GitHub: Review and decide whether to merge
     else Blocked, failed, or timed out
-        Service->>Store: Record outcome and reason
+        Service->>Metrics: Record outcome and reason
         Service->>GitHub: Post status requiring attention
     end
 ```
@@ -149,7 +149,27 @@ npm run build
 npm start
 ```
 
-Use `npm run dev` to run the TypeScript entry point directly. These are the scaffold's startup commands; live integration has not been validated. Missing credentials currently produce warnings instead of preventing startup.
+Use `npm run dev` to run the TypeScript entry point directly. Missing configuration produces startup warnings; live API operations validate Devin credentials before sending requests.
+
+### Devin API access
+
+Set `DEVIN_API_KEY` to a v3 `cog_` credential and `DEVIN_ORG_ID` to the organization's `org-` identifier, then run:
+
+```bash
+npm run devin:check
+```
+
+This performs a read-only session-list request (`first=1`); it creates no sessions and prints no session contents. A successful check verifies authentication and session-read access only. Session creation and GitHub repository access were subsequently verified by the live issue #1 run. See Devin's [authentication guide](https://docs.devin.ai/api-reference/authentication) and [Teams setup](https://docs.devin.ai/api-reference/getting-started/teams-quickstart).
+
+The client follows the documented [create](https://docs.devin.ai/api-reference/v3/sessions/post-organizations-sessions), [get](https://docs.devin.ai/api-reference/v3/sessions/get-organizations-session), and [terminate](https://docs.devin.ai/api-reference/v3/sessions/delete-organizations-sessions) contracts:
+
+- Uses opaque `session_id` values, `url`, numeric timestamps, and native `status`/`status_detail` fields.
+- Polls `new`, `claimed`, `resuming`, and actively working sessions. Treats `exit` or `running/finished` as a signal to verify the PR, not proof of remediation.
+- Treats `running/waiting_for_user` with an open PR as the review-ready handoff observed in the live run. Approval/input waits without a PR and suspended sessions are reported as blocked with a session link.
+- Retries GET requests up to three total attempts for network errors, 429, and 5xx, using backoff/`Retry-After` within a deadline. Permanent errors fail immediately. POST creation is not retried because an ambiguous failure may already have created paid work.
+- Sends `max_acu_limit` on creation. On polling timeout, requests `DELETE .../sessions/{session_id}?archive=true`, checks the returned state and, if needed, polls for confirmation. Termination is irreversible; archiving preserves the session for inspection. Failed/unconfirmed termination is reported explicitly.
+
+The access check stops on missing credentials. API errors exclude raw HTTP request configuration and response bodies; nested errors retain safe status diagnostics while bearer tokens and known token formats are redacted.
 
 With the service running on the default port:
 
@@ -163,13 +183,14 @@ curl http://localhost:3000/status
 
 ### Configuration
 
-These describe the current implementation, including API defaults still requiring verification. Keep credentials in the Git-ignored `.env` file.
+These describe the current implementation. Keep credentials in the Git-ignored `.env` file. The server can start without Devin credentials, but the client rejects missing/placeholder credentials before sending API requests.
 
 | Variable | Purpose | Current default |
 | --- | --- | --- |
 | `DEVIN_API_KEY` | Devin credential | Empty; startup warning |
 | `DEVIN_ORG_ID` | Organization used in API paths | Empty; startup warning |
 | `DEVIN_API_BASE_URL` | API base URL | `https://api.devin.ai/v3` |
+| `DEVIN_MAX_ACU_LIMIT` | Positive integer sent as `max_acu_limit` for every new session | `10` ACUs; configurable |
 | `GITHUB_TOKEN` | GitHub credential | Empty; startup warning |
 | `GITHUB_REPO_OWNER` | Target fork owner | `chengify` |
 | `GITHUB_REPO_NAME` | Target repository | `superset` |
@@ -188,35 +209,65 @@ The Dockerfile installs locked dependencies, compiles TypeScript in a build stag
 docker compose up --build
 ```
 
-The image build passed, and `/health` and `/status` returned 200 in a temporary network-isolated container. Live credentials and repository access are still needed to process real events. Compose with live configuration has not been exercised.
+The image build passed, and `/health` and `/status` returned 200 both in an isolated smoke test and from Docker Compose with live configuration. The Compose service processed the verified webhook-triggered run.
 
 ### Webhook status
 
-The intended configuration uses the fork's **Issues** events, JSON content type, the shared signing secret, and `https://<service-host>/webhook/github`. Adding the automation label should select an issue for processing.
+Configure the fork's **Issues** events, JSON content type, a high-entropy shared signing secret, and `https://<service-host>/webhook/github`. The signed GitHub ping and issue #1 label event both returned successful responses through an ngrok HTTPS tunnel.
 
 The handler verifies the original signed bytes, the repository, open issue state, and configured label. For label events, the specific label added must match. It requires `X-GitHub-Delivery` and remembers up to 10,000 accepted deliveries for 24 hours in memory. Overlapping runs for the same issue are suppressed. At capacity it returns 503 without recording the delivery: manually redeliver after capacity is available; no automatic retry queue is implemented. Restarting clears replay protection and does not resume monitoring.
 
-Verify the Devin API contract before enabling live events. Real events can initiate paid sessions and post issue comments, but the service no longer closes issues automatically.
+Real eligible events can initiate paid sessions and post issue comments. The service does not merge PRs or close issues automatically.
+
+To run the live webhook demo:
+
+1. Copy `.env.example` to `.env`, configure the Devin/GitHub credentials and a random webhook secret, and set `MAX_CONCURRENT_SESSIONS=1`.
+2. Start the service with `docker compose up --build` and verify `http://localhost:3000/health`.
+3. Expose port 3000 through an HTTPS tunnel, for example `ngrok http 3000`.
+4. In the Superset fork's **Settings → Webhooks**, add `https://<public-host>/webhook/github` using JSON, the same secret, and only **Issues** events. Confirm its automatic ping returns HTTP 200.
+5. Add the configured `devin-automation` label to an open issue only when ready to start paid work. Keep the service running until `/status` records the handoff.
+
+## Verified live demo
+
+Observed on September 9, 2026:
+
+| Evidence | Observed result |
+| --- | --- |
+| Trigger | Adding `devin-automation` to [Superset issue #1](https://github.com/chengify/superset/issues/1) delivered a signed `issues/labeled` webhook. |
+| Devin | The service created [session `10981f5d…`](https://app.devin.ai/sessions/10981f5d80af4c06b501ae71bb92d887) with one-session concurrency and a 10-ACU ceiling. |
+| Output | Devin opened [Superset PR #5](https://github.com/chengify/superset/pull/5) from the assigned unique branch to `master`; it was open, non-draft, cleanly mergeable, and changed two expected files when inspected. |
+| Agent-reported checks | Targeted pre-commit and mypy passed; targeted integration tests reported 32 passed/4 skipped; utility tests reported 1,086 passed/4 skipped. The PR lists full database integration, frontend, and all-files pre-commit checks as not run. |
+| Independent validation | No GitHub check runs or completed commit statuses were available when inspected. The service therefore reports `validation: unverified`. |
+| Status | `/status` reported 1 processed, 1 successful/PR-ready, and 0 failed, blocked, or active sessions, with session and PR links. |
+
+The live response used a 32-character opaque session ID rather than the prefix assumed from earlier examples. The first client build rejected the otherwise successful create response and posted a failure update while Devin continued remotely. The client now accepts bounded opaque IDs, recognizes an open PR plus `waiting_for_user` as the handoff boundary, and preserves safe API diagnostics in logs. The run was reconciled without launching a duplicate session, and a correction on issue #1 keeps the incident history visible.
+
+For this known one-off reconciliation path:
+
+```bash
+npm run devin:recover -- <issue-number> <session-id> <branch>
+```
+
+The command does not create a session. It verifies the existing session and PR before reclassifying one failed metric and posting a correction. It is not a substitute for durable automatic restart recovery.
 
 ## Known gaps
 
-1. **Live integration:** Verify the Devin API contract and demonstrate a real session producing a PR. The current lifecycle assumptions remain unverified.
-2. **Validation evidence:** PR readiness is checked, but test results are explicitly `unverified`. Add CI/test evidence before claiming a validated remediation.
-3. **Session controls:** Handle blocked/terminal states against the verified API and apply a supported spending limit. Polling currently retries all errors at a fixed interval. A polling/stop failure can release local capacity while remote work continues; the current limit controls local tasks, not guaranteed remote spend.
-4. **Durable tasks:** Persist recoverable task records and delivery IDs, resume monitoring after restart, and derive aggregates from records. Existing metrics files can contain stale counts from previous runs; corrected accounting applies to newly processed tasks and does not repair historical data.
-5. **Simulation:** Provide a user-facing credential-free simulation. Regression tests use fake clients but are not yet a complete demo command.
+1. **Independent validation:** PR readiness and Devin-reported test evidence are captured, but CI is not ingested and the service reports validation as `unverified`.
+2. **Session controls:** Automate recovery/resumption of monitored sessions. A monitoring failure, blocked state, or unconfirmed termination releases local capacity while the remote session may remain resumable or active. Concurrency controls local tasks; the submitted per-session ACU limit is not a global spending cap.
+3. **Durable tasks:** Persist recoverable task records and delivery IDs, resume monitoring after restart, and derive aggregates from records. Current JSON aggregates preserve reporting but are not a task queue.
+4. **Simulation:** Provide a user-facing credential-free simulation. Regression tests use fake clients but are not yet a complete demo command.
 
 Logs are written to `logs/combined.log` and `logs/error.log`; aggregate metrics are saved in `logs/metrics.json`. Log rotation is not implemented. Running sessions are not stored as recoverable task records.
 
-For new runs, `successfulSessions` means a completed session with a verified reviewable PR, not passing tests or a merged fix. `activeSessions` counts eligible tasks from preparation through PR verification. Failures fetching an issue before task creation appear in activity but do not increment session counters. Final activity includes the PR URL and `validation: unverified` where applicable.
+For new runs, `successfulSessions` means a completion signal followed by a verified reviewable PR, not passing tests or a merged fix. `blockedSessions` counts sessions requiring attention. `activeSessions` counts eligible tasks from preparation through PR verification. Failures fetching an issue before task creation appear in activity but do not increment session counters. Activity includes the session URL, failure/blockage reason, and PR URL with `validation: unverified` where applicable.
 
 ## Candidate Superset issues
 
-The local Superset checkout points to `chengify/superset`. [Issues #1–4](https://github.com/chengify/superset/issues) were verified on September 9, 2026: all were open and had no labels at that time.
+The local Superset checkout points to `chengify/superset`. [Issues #1–4](https://github.com/chengify/superset/issues) were verified on September 9, 2026. Issue #1 was selected for the demonstrated remediation; the others remain candidates rather than claimed fixes.
 
-| Candidate | Required refinement |
+| Candidate | Status / next decision |
 | --- | --- |
-| Database utility duplication | Specify the actual refactor, affected callers, and regression tests; removing TODO text alone is not a fix. |
+| Database utility duplication | Remediated by PR #5: reuse `DatabaseDAO`, preserve required return contracts, relocate the test-only deletion helper, and report targeted checks. |
 | Embedded dashboard UUID filtering | Establish compatibility requirements before removing integer-ID behavior. |
 | Paramiko constraint | Establish a concrete dependency problem and compatibility evidence; the notes do not establish a vulnerability. |
 | Frontend type safety | Select specific files, bounded changes, and a reproducible type check. |
@@ -231,9 +282,12 @@ Local checks observed on September 9, 2026:
 | --- | --- |
 | `npm run typecheck` | Passed. |
 | `npm run lint` | Passed. |
-| `npm test` | Passed: eight Node.js regression tests, including build. No external API calls. |
-| Docker build and container smoke check | Passed; `/health` and `/status` returned 200. |
-| Live issue-to-PR execution | Not verified. |
+| `npm test` | Passed: 25 Node.js regression/contract tests, including build. Tests use fake clients and make no external API calls. |
+| `npm run devin:check` | Passed against the configured organization; read-only and created no session. |
+| Docker build and container smoke check | Passed; live Compose `/health` and `/status` returned 200. |
+| Signed webhook ping | Passed through the public HTTPS tunnel without creating a session. |
+| Live issue-to-PR execution | Passed for issue #1: webhook → session → PR #5 → reconciled status and issue update. |
+| Superset validation | Devin-reported targeted results captured; independent CI/local confirmation remains outstanding. |
 
 ```text
 src/index.ts                 Express routes and startup
@@ -241,15 +295,18 @@ src/config/index.ts          Environment configuration
 src/webhook/handler.ts       Issue event handling
 src/automation/service.ts    Issue/session orchestration
 src/devin/client.ts          Devin HTTP client and polling
+src/devin/check.ts           Read-only Devin access check
+src/devin/recover.ts         Verified-session reconciliation command
 src/github/client.ts         GitHub operations and signature helper
 src/observability/           Logging and aggregate metrics
 Dockerfile                   Multi-stage build and runtime image
 docker-compose.yml           Service configuration
 tests/workflow.test.cjs       Webhook, orchestration, and PR regression tests
+tests/devin-client.test.cjs   API contract, retry, and lifecycle tests
 ```
 
 ## Demo and submission
 
-Demonstrate a real event starting a Devin session and producing a reviewable Superset fix with validation evidence. Provide the solution repository, the fork with selected issues and remediation PRs, verified Docker/run-or-simulate instructions, and a five-minute Loom covering the problem, demo, architecture, Devin's role, and next steps.
+The working demo evidence is issue #1, its Devin session, PR #5, and `/status`. The remaining submission work is to publish the current solution revision and record a five-minute Loom covering the problem, live workflow, architecture, Devin's role, observed result, limitations, and next steps.
 
 Report observed outcomes; label projected time savings as estimates. The known gaps above describe the remaining implementation work.
