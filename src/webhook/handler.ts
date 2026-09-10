@@ -8,6 +8,19 @@ export class WebhookHandler {
 
   constructor(private automation = automationService) {}
 
+  private pruneDeliveries(now: number): void {
+    for (const [id, timestamp] of this.deliveries) {
+      if (now - timestamp > 24 * 60 * 60 * 1000) this.deliveries.delete(id);
+    }
+  }
+
+  private rememberDelivery(delivery: string, now: number): void {
+    if (this.deliveries.size >= 10000) {
+      this.deliveries.delete(this.deliveries.keys().next().value!);
+    }
+    this.deliveries.set(delivery, now);
+  }
+
   async handleIssueEvent(req: Request, res: Response): Promise<void> {
     const event = req.body;
     const delivery = req.get("x-github-delivery");
@@ -46,9 +59,7 @@ export class WebhookHandler {
     }
 
     const now = Date.now();
-    for (const [id, timestamp] of this.deliveries) {
-      if (now - timestamp > 24 * 60 * 60 * 1000) this.deliveries.delete(id);
-    }
+    this.pruneDeliveries(now);
     if (this.deliveries.has(delivery)) {
       res.status(200).json({ message: "Duplicate delivery ignored" });
       return;
@@ -61,14 +72,66 @@ export class WebhookHandler {
       });
       return;
     }
-    if (this.deliveries.size >= 10000) {
-      this.deliveries.delete(this.deliveries.keys().next().value!);
-    }
-    this.deliveries.set(delivery, now);
+    this.rememberDelivery(delivery, now);
     res.status(outcome === "accepted" ? 202 : 200).json({
       message:
         outcome === "accepted" ? "Issue accepted" : "Issue already active",
       issueNumber: event.issue.number,
+    });
+  }
+
+  async handlePullRequestEvent(req: Request, res: Response): Promise<void> {
+    const event = req.body;
+    const delivery = req.get("x-github-delivery");
+    if (
+      !delivery ||
+      !event ||
+      typeof event !== "object" ||
+      !Number.isSafeInteger(event.pull_request?.number) ||
+      event.pull_request.number < 1 ||
+      typeof event.pull_request?.html_url !== "string" ||
+      typeof event.repository?.name !== "string" ||
+      typeof event.repository?.owner?.login !== "string"
+    ) {
+      res
+        .status(400)
+        .json({ error: "Invalid pull request event or missing delivery ID" });
+      return;
+    }
+
+    const eligible =
+      event.repository?.name?.toLowerCase() ===
+        config.github.repoName.toLowerCase() &&
+      event.repository?.owner?.login?.toLowerCase() ===
+        config.github.repoOwner.toLowerCase() &&
+      event.action === "closed" &&
+      event.pull_request.merged === true;
+    if (!eligible) {
+      res.status(200).json({ message: "Event ignored" });
+      return;
+    }
+
+    const now = Date.now();
+    this.pruneDeliveries(now);
+    if (this.deliveries.has(delivery)) {
+      res.status(200).json({ message: "Duplicate delivery ignored" });
+      return;
+    }
+
+    const outcome = this.automation.recordPullRequestMerged(
+      event.pull_request.html_url,
+      typeof event.pull_request.merged_at === "string"
+        ? event.pull_request.merged_at
+        : undefined,
+    );
+    this.rememberDelivery(delivery, now);
+    res.status(200).json({
+      message:
+        outcome === "recorded"
+          ? "Merged remediation recorded"
+          : outcome === "duplicate"
+            ? "Merged remediation already recorded"
+            : "Pull request is not a tracked remediation",
     });
   }
 

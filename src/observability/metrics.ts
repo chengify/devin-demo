@@ -20,7 +20,8 @@ export interface ActivityEntry {
   timestamp: string;
   issueNumber: number;
   issueTitle: string;
-  status: "started" | "completed" | "pr_ready" | "failed" | "blocked";
+  status:
+    "started" | "completed" | "pr_ready" | "merged" | "failed" | "blocked";
   sessionUrl?: string;
   reason?: string;
   prUrl?: string;

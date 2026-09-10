@@ -1,6 +1,6 @@
 import { ActivityEntry, Metrics } from "./metrics";
 
-type DisplayState = "active" | "complete" | "blocked" | "failed";
+type DisplayState = "active" | "complete" | "merged" | "blocked" | "failed";
 
 export interface TaskSummary extends ActivityEntry {
   displayState: DisplayState;
@@ -10,6 +10,7 @@ const displayStates: Record<ActivityEntry["status"], DisplayState> = {
   started: "active",
   completed: "complete",
   pr_ready: "complete",
+  merged: "merged",
   blocked: "blocked",
   failed: "failed",
 };
@@ -51,6 +52,7 @@ function duration(milliseconds?: number): string {
 
 function stateLabel(task: TaskSummary): string {
   if (task.status === "pr_ready") return "PR ready";
+  if (task.status === "merged") return "Merged";
   return task.displayState[0].toUpperCase() + task.displayState.slice(1);
 }
 
@@ -63,12 +65,14 @@ export function renderDashboard(
   const rows = tasks
     .map((task) => {
       const issueUrl = `https://github.com/${encodeURIComponent(repoOwner)}/${encodeURIComponent(repoName)}/issues/${task.issueNumber}`;
-      const detail = task.reason || (task.status === "pr_ready" ? "Ready for human review" : "—");
+      const detail =
+        task.reason ||
+        (task.status === "pr_ready" ? "Ready for human review" : "—");
       return `<tr>
         <td><a href="${escapeHtml(issueUrl)}" target="_blank" rel="noopener noreferrer">#${task.issueNumber}</a><span class="task-title">${escapeHtml(task.issueTitle)}</span></td>
         <td><span class="badge ${task.displayState}">${escapeHtml(stateLabel(task))}</span></td>
         <td>${link(task.sessionUrl, "Open session")}</td>
-        <td>${link(task.prUrl, "Open PR")}</td>
+        <td>${link(task.prUrl, task.status === "merged" ? "View merged PR" : "Open PR")}</td>
         <td>${escapeHtml(task.validation || "—")}</td>
         <td>${escapeHtml(duration(task.duration))}</td>
         <td>${escapeHtml(new Date(task.timestamp).toLocaleString("en-US", { timeZone: "UTC" }))} UTC</td>
@@ -78,7 +82,8 @@ export function renderDashboard(
     .join("");
 
   const taskRows =
-    rows || '<tr><td colspan="8" class="empty">No automation tasks recorded yet.</td></tr>';
+    rows ||
+    '<tr><td colspan="8" class="empty">No automation tasks recorded yet.</td></tr>';
 
   return `<!doctype html>
 <html lang="en">
@@ -112,6 +117,7 @@ export function renderDashboard(
     .badge { display:inline-block; padding:3px 9px; border-radius:999px; font-size:12px; font-weight:700; white-space:nowrap; }
     .active { color:#bcd0ff; background:#263d75; }
     .complete { color:#8df0bc; background:#1b5037; }
+    .merged { color:#8df0bc; background:#18513f; box-shadow:inset 0 0 0 1px #2d8a69; }
     .blocked { color:#ffe0a0; background:#654a17; }
     .failed { color:#ffb1b1; background:#642a33; }
     .muted,.empty,footer { color:var(--muted); }

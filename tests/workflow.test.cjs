@@ -24,18 +24,27 @@ logger.silent = true;
 let server;
 let url;
 let originalSchedule;
+let originalRecordMerged;
 let scheduled;
+let recordedMerges;
 const directory = mkdtempSync(path.join(tmpdir(), 'devin-review-tests-'));
 before(async () => {
   server = app.listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
   url = `http://127.0.0.1:${server.address().port}/webhook/github`;
   originalSchedule = automationService.scheduleIssue;
+  originalRecordMerged = automationService.recordPullRequestMerged;
   scheduled = [];
+  recordedMerges = [];
   automationService.scheduleIssue = number => { scheduled.push(number); return 'accepted'; };
+  automationService.recordPullRequestMerged = (prUrl, mergedAt) => {
+    recordedMerges.push({ prUrl, mergedAt });
+    return 'recorded';
+  };
 });
 after(async () => {
   automationService.scheduleIssue = originalSchedule;
+  automationService.recordPullRequestMerged = originalRecordMerged;
   await new Promise(resolve => server.close(resolve));
   rmSync(directory, { recursive: true });
   logger.close();
@@ -46,9 +55,9 @@ const event = () => ({
   issue: { number: 1, state: 'open', labels: [{ name: 'fix-me' }] },
 });
 let delivery = 0;
-async function send(payload, signature, id = `delivery-${++delivery}`) {
+async function send(payload, signature, id = `delivery-${++delivery}`, githubEvent = 'issues') {
   const headers = {
-    'content-type': 'application/json', 'x-github-event': 'issues', 'x-github-delivery': id,
+    'content-type': 'application/json', 'x-github-event': githubEvent, 'x-github-delivery': id,
   };
   if (signature !== null) headers['x-hub-signature-256'] = signature ??
     `sha256=${createHmac('sha256', 'test-secret').update(payload).digest('hex')}`;
@@ -87,7 +96,35 @@ test('HTML dashboard endpoint is read-only and security constrained', async () =
   assert.equal(response.status, 200);
   assert.match(response.headers.get('content-type'), /^text\/html/);
   assert.match(response.headers.get('content-security-policy'), /default-src 'none'/);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
   assert.match(await response.text(), /Current and completed tasks/);
+});
+test('a merged tracked PR webhook is routed once for lifecycle reconciliation', async () => {
+  const mergeEvent = {
+    action: 'closed',
+    repository: { name: 'test-repo', owner: { login: 'test-owner' } },
+    pull_request: { number: 2, html_url: 'https://github.com/test-owner/test-repo/pull/2',
+      merged: true, merged_at: '2026-09-10T01:00:00Z' },
+  };
+  const payload = JSON.stringify(mergeEvent);
+  assert.equal((await send(payload, undefined, 'merge-delivery', 'pull_request')).status, 200);
+  assert.equal((await send(payload, undefined, 'merge-delivery', 'pull_request')).status, 200);
+  assert.deepEqual(recordedMerges, [{
+    prUrl: mergeEvent.pull_request.html_url,
+    mergedAt: mergeEvent.pull_request.merged_at,
+  }]);
+});
+test('non-merged and unrelated PR events do not update task lifecycle', async () => {
+  const before = recordedMerges.length;
+  const base = {
+    action: 'closed', repository: { name: 'test-repo', owner: { login: 'test-owner' } },
+    pull_request: { number: 2, html_url: 'https://github.com/test-owner/test-repo/pull/2', merged: false },
+  };
+  assert.equal((await send(JSON.stringify(base), undefined, undefined, 'pull_request')).status, 200);
+  const unrelated = { ...base, repository: { name: 'other', owner: { login: 'test-owner' } },
+    pull_request: { ...base.pull_request, merged: true } };
+  assert.equal((await send(JSON.stringify(unrelated), undefined, undefined, 'pull_request')).status, 200);
+  assert.equal(recordedMerges.length, before);
 });
 
 const issue = { number: 1, title: 'Fix a bug', body: 'Description', state: 'open',
@@ -200,6 +237,25 @@ test('a false failed outcome can be reconciled as one successful session', () =>
   assert.equal(m.successfulSessions, 1);
   assert.equal(m.averageSessionDuration, 1000);
   assert.throws(() => metrics.reclassifyFailedAsSuccessful(), /No failed session/);
+});
+test('a known remediation PR can be marked merged exactly once', () => {
+  const metrics = new MetricsTracker(path.join(directory, `metrics-${++run}.json`));
+  metrics.addActivity({ timestamp: '2026-09-10T00:00:00Z', issueNumber: 1,
+    issueTitle: 'Fix a bug', status: 'pr_ready', sessionId: 'devin-test',
+    sessionUrl: 'https://app.devin.ai/sessions/devin-test',
+    prUrl: 'https://github.com/test-owner/test-repo/pull/2', validation: 'unverified' });
+  const service = new AutomationService({}, {}, metrics);
+  assert.equal(service.recordPullRequestMerged(
+    'https://github.com/test-owner/test-repo/pull/2', '2026-09-10T01:00:00Z'), 'recorded');
+  assert.equal(service.recordPullRequestMerged(
+    'https://github.com/test-owner/test-repo/pull/2', '2026-09-10T01:00:00Z'), 'duplicate');
+  assert.equal(service.recordPullRequestMerged(
+    'https://github.com/test-owner/test-repo/pull/99'), 'ignored');
+  const latest = metrics.getMetrics().recentActivity[0];
+  assert.equal(latest.status, 'merged');
+  assert.equal(latest.timestamp, '2026-09-10T01:00:00.000Z');
+  assert.equal(latest.sessionId, 'devin-test');
+  assert.match(latest.reason, /merged on GitHub/);
 });
 test('PR verification rejects empty, draft, closed, or wrong-repository changes', async () => {
   const client = new GitHubClient();

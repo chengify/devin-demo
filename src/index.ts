@@ -60,6 +60,7 @@ app.get("/dashboard", (_req: Request, res: Response) => {
       "Content-Security-Policy",
       "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
     )
+    .set("Cache-Control", "no-store")
     .type("html")
     .status(200)
     .send(
@@ -92,6 +93,9 @@ app.post("/webhook/github", async (req: Request, res: Response) => {
     switch (event) {
       case "issues":
         await webhookHandler.handleIssueEvent(req, res);
+        break;
+      case "pull_request":
+        await webhookHandler.handlePullRequestEvent(req, res);
         break;
       case "ping":
         await webhookHandler.handlePingEvent(req, res);

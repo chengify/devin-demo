@@ -31,6 +31,31 @@ export class AutomationService {
     return "accepted";
   }
 
+  recordPullRequestMerged(
+    prUrl: string,
+    mergedAt?: string,
+  ): "recorded" | "duplicate" | "ignored" {
+    const activity = this.metrics.getMetrics().recentActivity;
+    const existing = activity.find((entry) => entry.prUrl === prUrl);
+    if (!existing) return "ignored";
+    if (existing.status === "merged") return "duplicate";
+
+    this.metrics.addActivity({
+      ...existing,
+      timestamp:
+        mergedAt && !Number.isNaN(Date.parse(mergedAt))
+          ? new Date(mergedAt).toISOString()
+          : new Date().toISOString(),
+      status: "merged",
+      reason: "Pull request merged on GitHub",
+    });
+    logger.info("Recorded merged remediation pull request", {
+      issueNumber: existing.issueNumber,
+      prUrl,
+    });
+    return "recorded";
+  }
+
   private async notify(issueNumber: number, message: string): Promise<void> {
     try {
       await this.github.addIssueComment(issueNumber, message);

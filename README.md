@@ -1,20 +1,20 @@
 # Devin Automation Service
 
-An event-driven issue remediation service for an Apache Superset fork. A signed GitHub issue event starts and monitors a Devin API session, verifies the resulting pull request, and exposes progress and evidence for engineering reviewers.
+An event-driven issue remediation service for an Apache Superset fork. A signed GitHub issue event starts and monitors a Devin API session, verifies the resulting pull request, and exposes progress and evidence for engineering reviewers. A later signed pull-request event advances the tracked task to merged.
 
 ## Current status
 
-The workflow has been demonstrated end to end against `chengify/superset`: labeling issue #1 triggered a real Devin session and produced reviewable PR #5. The service reports the PR as ready while keeping its test validation explicitly unverified until independent CI or local confirmation exists.
+The workflow has been demonstrated end to end against `chengify/superset`: labeling issue #1 triggered a real Devin session and produced PR #5, which was subsequently reviewed and merged. The service reports the merged lifecycle state while keeping test validation explicitly unverified until independent CI or local confirmation exists.
 
 | Component | Current state |
 | --- | --- |
-| Express | Verifies signatures from original request bytes, filters events, suppresses duplicate/overlapping work, and exposes health, JSON status, and HTML dashboard routes. |
+| Express | Verifies signatures from original request bytes, handles issue and merged-PR events, suppresses duplicate/overlapping work, and exposes health, JSON status, and HTML dashboard routes. |
 | Devin client | Uses the live v3 contract, opaque session IDs, bounded GET retries, native lifecycle states, per-session ACU limits, and archived timeout termination. |
 | GitHub client | Reads issues, posts progress comments, verifies webhook signatures, and validates the resulting PR's repository, branch, base, state, and changed-file count. |
-| Remediation handoff | Verified live: issue #1 → Devin session → unique branch → open, non-draft PR #5 targeting `master`. |
+| Remediation handoff | Verified live: issue #1 → Devin session → unique branch → non-draft PR #5 targeting `master` → human merge. |
 | Observability | Reports active/successful/blocked/failed counts plus issue, session, PR, timing, reason, and validation fields. Error diagnostics are sanitized. |
 | Docker | Live Compose service and public HTTPS webhook endpoint returned healthy responses during the demonstrated run. |
-| Validation | Compilation, lint, and 28 regression/contract tests pass. Devin's Superset results are captured separately from independent validation. |
+| Validation | Compilation, lint, and 31 regression/contract tests pass. Devin's Superset results are captured separately from independent validation. |
 
 ## Workflow and architecture
 
@@ -74,7 +74,7 @@ flowchart LR
         verify["PR verification; tests unverified"]
     end
 
-    github -->|Issue events| webhook
+    github -->|Issue and merged-PR events| webhook
     webhook --> automation
     automation -->|Create and poll sessions| client
     client <-->|HTTP API| devin
@@ -126,6 +126,10 @@ sequenceDiagram
         Service->>Metrics: Record PR readiness and validation separately
         Service->>GitHub: Post PR link and validation summary
         Engineer->>GitHub: Review and decide whether to merge
+        Engineer->>GitHub: Merge approved PR
+        GitHub->>Service: Deliver pull_request/closed webhook
+        Service->>Service: Correlate URL with a tracked remediation PR
+        Service->>Metrics: Record merged state
     else Blocked, failed, or timed out
         Service->>Metrics: Record outcome and reason
         Service->>GitHub: Post status requiring attention
@@ -214,9 +218,9 @@ The image build passed, and `/health` and `/status` returned 200 both in an isol
 
 ### Webhook status
 
-Configure the fork's **Issues** events, JSON content type, a high-entropy shared signing secret, and `https://<service-host>/webhook/github`. The signed GitHub ping and issue #1 label event both returned successful responses through an ngrok HTTPS tunnel.
+The fork webhook is configured for **Issues** and **Pull requests** events, JSON content type, a high-entropy shared signing secret, and `https://<service-host>/webhook/github`. The signed GitHub ping and issue #1 label event both returned successful responses through an ngrok HTTPS tunnel. The Pull requests selection was user-confirmed on September 10, 2026; the least-privilege application token cannot read repository webhook administration settings.
 
-The handler verifies the original signed bytes, the repository, open issue state, and configured label. For label events, the specific label added must match. It requires `X-GitHub-Delivery` and remembers up to 10,000 accepted deliveries for 24 hours in memory. Overlapping runs for the same issue are suppressed. At capacity it returns 503 without recording the delivery: manually redeliver after capacity is available; no automatic retry queue is implemented. Restarting clears replay protection and does not resume monitoring.
+The handler verifies the original signed bytes and repository. Issue events must reference an open issue and the configured label; for label events, the specific label added must match. A `pull_request/closed` event changes a task to merged only when `merged` is true and the exact PR URL was previously recorded by this service. It requires `X-GitHub-Delivery` and remembers up to 10,000 accepted deliveries for 24 hours in memory. Overlapping runs for the same issue are suppressed. At capacity it returns 503 without recording the issue delivery: manually redeliver after capacity is available; no automatic retry queue is implemented. Restarting clears replay protection and does not resume monitoring.
 
 Real eligible events can initiate paid sessions and post issue comments. The service does not merge PRs or close issues automatically.
 
@@ -225,7 +229,7 @@ To run the live webhook demo:
 1. Copy `.env.example` to `.env`, configure the Devin/GitHub credentials and a random webhook secret, and set `MAX_CONCURRENT_SESSIONS=1`.
 2. Start the service with `docker compose up --build` and verify `http://localhost:3000/health`.
 3. Expose port 3000 through an HTTPS tunnel, for example `ngrok http 3000`.
-4. In the Superset fork's **Settings → Webhooks**, add `https://<public-host>/webhook/github` using JSON, the same secret, and only **Issues** events. Confirm its automatic ping returns HTTP 200.
+4. In the Superset fork's **Settings → Webhooks**, add `https://<public-host>/webhook/github` using JSON and the same secret. Select **Let me select individual events**, enable **Issues** and **Pull requests**, and confirm the automatic ping returns HTTP 200.
 5. Add the configured `devin-automation` label to an open issue only when ready to start paid work. Keep the service running until `/status` records the handoff.
 
 ## Verified live demo
@@ -236,10 +240,10 @@ Observed on September 9, 2026:
 | --- | --- |
 | Trigger | Adding `devin-automation` to [Superset issue #1](https://github.com/chengify/superset/issues/1) delivered a signed `issues/labeled` webhook. |
 | Devin | The service created [session `10981f5d…`](https://app.devin.ai/sessions/10981f5d80af4c06b501ae71bb92d887) with one-session concurrency and a 10-ACU ceiling. |
-| Output | Devin opened [Superset PR #5](https://github.com/chengify/superset/pull/5) from the assigned unique branch to `master`; it was open, non-draft, cleanly mergeable, and changed two expected files when inspected. |
+| Output | Devin opened [Superset PR #5](https://github.com/chengify/superset/pull/5) from the assigned unique branch to `master`; it was non-draft, cleanly mergeable, and changed two expected files when inspected. It was subsequently merged at `2026-09-09T14:12:32Z`. |
 | Agent-reported checks | Targeted pre-commit and mypy passed; targeted integration tests reported 32 passed/4 skipped; utility tests reported 1,086 passed/4 skipped. The PR lists full database integration, frontend, and all-files pre-commit checks as not run. |
 | Independent validation | No GitHub check runs or completed commit statuses were available when inspected. The service therefore reports `validation: unverified`. |
-| Status | `/status` reported 1 processed, 1 successful/PR-ready, and 0 failed, blocked, or active sessions, with session and PR links. |
+| Status | `/status` reports 1 processed, 1 successful handoff, and 0 failed, blocked, or active sessions. The latest issue #1 activity is `merged`, with session and PR links; `/dashboard` renders the same lifecycle state. |
 
 The live response used a 32-character opaque session ID rather than the prefix assumed from earlier examples. The first client build rejected the otherwise successful create response and posted a failure update while Devin continued remotely. The client now accepts bounded opaque IDs, recognizes an open PR plus `waiting_for_user` as the handoff boundary, and preserves safe API diagnostics in logs. The run was reconciled without launching a duplicate session, and a correction on issue #1 keeps the incident history visible.
 
@@ -260,7 +264,7 @@ The command does not create a session. It verifies the existing session and PR b
 
 Logs are written to `logs/combined.log` and `logs/error.log`; aggregate metrics are saved in `logs/metrics.json`. Log rotation is not implemented. Running sessions are not stored as recoverable task records.
 
-For new runs, `successfulSessions` means a completion signal followed by a verified reviewable PR, not passing tests or a merged fix. `blockedSessions` counts sessions requiring attention. `activeSessions` counts eligible tasks from preparation through PR verification. Failures fetching an issue before task creation appear in activity but do not increment session counters. Activity includes the session URL, failure/blockage reason, and PR URL with `validation: unverified` where applicable.
+For new runs, `successfulSessions` means a completion signal followed by a verified reviewable PR, not passing tests. A subsequent verified GitHub webhook records `merged` as the task's latest lifecycle state without changing the successful-session count. `blockedSessions` counts sessions requiring attention. `activeSessions` counts eligible tasks from preparation through PR verification. Failures fetching an issue before task creation appear in activity but do not increment session counters. Activity includes the session URL, failure/blockage reason, and PR URL with `validation: unverified` where applicable.
 
 ## Candidate Superset issues
 
@@ -283,7 +287,7 @@ Local checks observed on September 9, 2026:
 | --- | --- |
 | `npm run typecheck` | Passed. |
 | `npm run lint` | Passed. |
-| `npm test` | Passed: 28 Node.js regression/contract tests, including build. Tests use fake clients and make no external API calls. |
+| `npm test` | Passed: 31 Node.js regression/contract tests, including build. Tests use fake clients and make no external API calls. |
 | `npm run devin:check` | Passed against the configured organization; read-only and created no session. |
 | Docker build and container smoke check | Passed; live Compose `/health` and `/status` returned 200. |
 | Signed webhook ping | Passed through the public HTTPS tunnel without creating a session. |
@@ -293,7 +297,7 @@ Local checks observed on September 9, 2026:
 ```text
 src/index.ts                 Express routes and startup
 src/config/index.ts          Environment configuration
-src/webhook/handler.ts       Issue event handling
+src/webhook/handler.ts       Issue and merged-PR event handling
 src/automation/service.ts    Issue/session orchestration
 src/devin/client.ts          Devin HTTP client and polling
 src/devin/check.ts           Read-only Devin access check
