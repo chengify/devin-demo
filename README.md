@@ -8,13 +8,13 @@ The workflow has been demonstrated end to end against `chengify/superset`: label
 
 | Component | Current state |
 | --- | --- |
-| Express | Verifies signatures from original request bytes, filters events, suppresses duplicate/overlapping work, and exposes health and JSON status routes. |
+| Express | Verifies signatures from original request bytes, filters events, suppresses duplicate/overlapping work, and exposes health, JSON status, and HTML dashboard routes. |
 | Devin client | Uses the live v3 contract, opaque session IDs, bounded GET retries, native lifecycle states, per-session ACU limits, and archived timeout termination. |
 | GitHub client | Reads issues, posts progress comments, verifies webhook signatures, and validates the resulting PR's repository, branch, base, state, and changed-file count. |
 | Remediation handoff | Verified live: issue #1 → Devin session → unique branch → open, non-draft PR #5 targeting `master`. |
 | Observability | Reports active/successful/blocked/failed counts plus issue, session, PR, timing, reason, and validation fields. Error diagnostics are sanitized. |
 | Docker | Live Compose service and public HTTPS webhook endpoint returned healthy responses during the demonstrated run. |
-| Validation | Compilation, lint, and 25 regression/contract tests pass. Devin's Superset results are captured separately from independent validation. |
+| Validation | Compilation, lint, and 28 regression/contract tests pass. Devin's Superset results are captured separately from independent validation. |
 
 ## Workflow and architecture
 
@@ -69,7 +69,7 @@ flowchart LR
         client["Devin API client"]
         ghclient["GitHub API client"]
         metrics["Logs and aggregate metrics"]
-        status["GET /status - JSON"]
+        status["GET /status - JSON<br/>GET /dashboard - HTML"]
         tasks["Planned: durable task records"]
         verify["PR verification; tests unverified"]
     end
@@ -177,9 +177,10 @@ With the service running on the default port:
 curl http://localhost:3000/
 curl http://localhost:3000/health
 curl http://localhost:3000/status
+# Open http://localhost:3000/dashboard in a browser
 ```
 
-`/health` reports process availability, not GitHub or Devin connectivity. `/status` returns JSON rather than a graphical dashboard. A credential-free workflow simulation is planned but not implemented.
+`/health` reports process availability, not GitHub or Devin connectivity. `/status` is the machine-readable metrics endpoint. `/dashboard` is a read-only HTML view that auto-refreshes every 10 seconds and shows KPI counts plus the latest active or terminal state for each issue, with Devin session and PR links. It derives tasks from the bounded recent-activity log rather than a durable task store. A credential-free workflow simulation is planned but not implemented.
 
 ### Configuration
 
@@ -282,7 +283,7 @@ Local checks observed on September 9, 2026:
 | --- | --- |
 | `npm run typecheck` | Passed. |
 | `npm run lint` | Passed. |
-| `npm test` | Passed: 25 Node.js regression/contract tests, including build. Tests use fake clients and make no external API calls. |
+| `npm test` | Passed: 28 Node.js regression/contract tests, including build. Tests use fake clients and make no external API calls. |
 | `npm run devin:check` | Passed against the configured organization; read-only and created no session. |
 | Docker build and container smoke check | Passed; live Compose `/health` and `/status` returned 200. |
 | Signed webhook ping | Passed through the public HTTPS tunnel without creating a session. |
@@ -298,7 +299,7 @@ src/devin/client.ts          Devin HTTP client and polling
 src/devin/check.ts           Read-only Devin access check
 src/devin/recover.ts         Verified-session reconciliation command
 src/github/client.ts         GitHub operations and signature helper
-src/observability/           Logging and aggregate metrics
+src/observability/           Logging, aggregate metrics, and HTML dashboard
 Dockerfile                   Multi-stage build and runtime image
 docker-compose.yml           Service configuration
 tests/workflow.test.cjs       Webhook, orchestration, and PR regression tests

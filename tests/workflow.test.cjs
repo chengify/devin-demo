@@ -82,6 +82,13 @@ test('unrelated labels, repositories, and closed issues do not schedule work', a
   assert.equal(scheduled.length, before);
   assert.equal((await send('{}')).status, 400);
 });
+test('HTML dashboard endpoint is read-only and security constrained', async () => {
+  const response = await fetch(`${new URL(url).origin}/dashboard`);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-type'), /^text\/html/);
+  assert.match(response.headers.get('content-security-policy'), /default-src 'none'/);
+  assert.match(await response.text(), /Current and completed tasks/);
+});
 
 const issue = { number: 1, title: 'Fix a bug', body: 'Description', state: 'open',
   labels: [{ name: 'fix-me' }], html_url: 'https://github.com/test-owner/test-repo/issues/1' };

@@ -4,7 +4,7 @@ import { getLogger } from "./logger";
 
 const logger = getLogger("metrics");
 
-interface Metrics {
+export interface Metrics {
   totalIssuesProcessed: number;
   successfulSessions: number;
   failedSessions: number;
@@ -16,7 +16,7 @@ interface Metrics {
   recentActivity: ActivityEntry[];
 }
 
-interface ActivityEntry {
+export interface ActivityEntry {
   timestamp: string;
   issueNumber: number;
   issueTitle: string;

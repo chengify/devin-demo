@@ -1,6 +1,7 @@
 import express, { Request, Response } from "express";
 import { webhookHandler } from "./webhook/handler";
 import { metricsTracker } from "./observability/metrics";
+import { renderDashboard } from "./observability/dashboard";
 import { getLogger } from "./observability/logger";
 import { config } from "./config";
 import { githubClient } from "./github/client";
@@ -53,6 +54,23 @@ app.get("/status", (_req: Request, res: Response) => {
   });
 });
 
+app.get("/dashboard", (_req: Request, res: Response) => {
+  res
+    .set(
+      "Content-Security-Policy",
+      "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+    )
+    .type("html")
+    .status(200)
+    .send(
+      renderDashboard(
+        metricsTracker.getMetrics(),
+        config.github.repoOwner,
+        config.github.repoName,
+      ),
+    );
+});
+
 // GitHub webhook endpoint
 app.post("/webhook/github", async (req: Request, res: Response) => {
   const event = req.headers["x-github-event"] as string;
@@ -98,6 +116,7 @@ app.get("/", (_req: Request, res: Response) => {
     endpoints: {
       health: "GET /health",
       status: "GET /status",
+      dashboard: "GET /dashboard",
       webhook: "POST /webhook/github",
     },
   });
