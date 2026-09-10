@@ -18,6 +18,8 @@ The workflow has been demonstrated end to end against `chengify/superset`: label
 
 ## Workflow and architecture
 
+![Devin issue-remediation architecture and workflow](docs/devin-automation-architecture.png)
+
 ### High-level overview
 
 This architecture was exercised by the verified issue #1 run. Durable task storage and independent CI ingestion remain future extensions.
@@ -140,6 +142,8 @@ Devin performs the engineering work; this service coordinates it. Human review a
 
 The stack is Node.js 20+, TypeScript, Express, Axios, Octokit, Winston, and dotenv.
 
+For a start-to-finish checklist covering Devin credentials, the Devin GitHub App, the coordinator's GitHub token, Docker, ngrok, and repository webhooks, see [Experiment setup guide](docs/SETUP_GUIDE.md).
+
 ## Local setup
 
 From this repository's root:
@@ -261,6 +265,8 @@ The command does not create a session. It verifies the existing session and PR b
 2. **Session controls:** Automate recovery/resumption of monitored sessions. A monitoring failure, blocked state, or unconfirmed termination releases local capacity while the remote session may remain resumable or active. Concurrency controls local tasks; the submitted per-session ACU limit is not a global spending cap.
 3. **Durable tasks:** Persist recoverable task records and delivery IDs, resume monitoring after restart, and derive aggregates from records. Current JSON aggregates preserve reporting but are not a task queue.
 4. **Simulation:** Provide a user-facing credential-free simulation. Regression tests use fake clients but are not yet a complete demo command.
+
+See [Future work](docs/FUTURE_WORK.md) for a prioritized production roadmap, including authorized bidirectional GitHub-to-Devin instructions.
 
 Logs are written to `logs/combined.log` and `logs/error.log`; aggregate metrics are saved in `logs/metrics.json`. Log rotation is not implemented. Running sessions are not stored as recoverable task records.
 
