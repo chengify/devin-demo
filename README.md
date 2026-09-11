@@ -2,25 +2,23 @@
 
 An event-driven issue remediation service for an Apache Superset fork. A signed GitHub issue event starts and monitors a Devin API session, verifies the resulting pull request, and exposes progress and evidence for engineering reviewers. A later signed pull-request event advances the tracked task to merged.
 
-## Current status
+## Capabilities
 
-The workflow has been demonstrated end to end against `chengify/superset`: labeling an eligible issue triggered a real Devin session, produced a reviewable pull request, and recorded its later human merge. The service reports the merged lifecycle state while keeping test validation explicitly unverified until independent CI or local confirmation exists.
-
-| Component | Current state |
+| Capability | Behavior |
 | --- | --- |
-| Express | Verifies signatures from original request bytes, handles issue and merged-PR events, suppresses duplicate/overlapping work, and exposes health, JSON status, and HTML dashboard routes. |
-| Devin client | Uses the live v3 contract, opaque session IDs, bounded GET retries, native lifecycle states, per-session ACU limits, and archived timeout termination. |
-| GitHub client | Reads issues, posts progress comments, verifies webhook signatures, and validates the resulting PR's repository, branch, base, state, and changed-file count. |
-| Remediation handoff | Verified live: labeled issue → Devin session → unique branch → non-draft PR targeting `master` → human merge. |
-| Observability | Reports active/successful/blocked/failed counts plus issue, session, PR, timing, reason, and validation fields. Error diagnostics are sanitized. |
-| Docker | Live Compose service and public HTTPS webhook endpoint returned healthy responses during the demonstrated run. |
-| Validation | Compilation, lint, and 31 regression/contract tests pass. Devin's Superset results are captured separately from independent validation. |
+| Event handling | Accepts signed GitHub issue and merged-PR events for the configured repository, with duplicate and overlapping-work protection within one process. |
+| Session management | Creates and monitors Devin API v3 sessions with configurable concurrency, timeouts, and per-session ACU limits. |
+| PR handoff | Checks that a non-draft PR comes from the assigned branch, targets the repository's default branch, and contains changes; posts progress and outcome comments on the issue. |
+| Observability | Exposes task outcomes, timing, and issue/session/PR links through logs, JSON status, and an auto-refreshing dashboard. Tracks human merges through GitHub events. |
+| Local deployment | Runs through Docker Compose, with a public HTTPS endpoint required for GitHub webhook delivery. |
 
 ## Workflow and architecture
 
 ![Devin issue-remediation architecture and workflow](docs/devin-automation-architecture.png)
 
 The service verifies signed GitHub events, coordinates a bounded Devin session, verifies the resulting PR, and exposes its state through JSON metrics and an HTML dashboard. Devin uses its GitHub App to clone, implement, test, push, and open the PR; human review and merging remain outside the automation boundary.
+
+Devin provides the engineering execution: it interprets an issue, investigates the codebase, implements a change, runs relevant checks, and delivers a pull request for review. This lets engineers delegate investigation and implementation without writing a custom remediation script for each issue. The coordinator manages that work with per-session ACU limits, concurrency controls, PR checks, and visible progress; engineers retain responsibility for assessing correctness and approving merges.
 
 ## Local setup
 
@@ -45,18 +43,18 @@ curl http://localhost:3000/status
 
 `npm run devin:check` is read-only. Adding `devin-automation` to an eligible issue starts paid work; do that only after completing the full setup guide.
 
-## Verified live demo
+## Run the workflow
 
 After completing the [experiment setup guide](docs/SETUP_GUIDE.md), run the end-to-end workflow as follows:
 
 1. Start the service with `docker compose up --build` and expose it through the configured HTTPS tunnel.
 2. Confirm `/health` is healthy and GitHub can successfully deliver webhook events.
-3. Create or select an open issue in the configured repository, then add the `devin-automation` label. This starts paid Devin work.
+3. Create or select an open issue in the configured repository, then add the configured automation label (`devin-automation` by default). This starts paid Devin work.
 4. Open [the dashboard](http://localhost:3000/dashboard). It refreshes automatically and should show the accepted task, active Devin session, and eventual PR handoff. Use [the JSON status endpoint](http://localhost:3000/status) for machine-readable evidence.
 5. Follow the session link to inspect Devin's work and review the resulting pull request, including its diff and reported validation.
-6. Merge the pull request manually if it meets the review bar. The signed `pull_request/closed` webhook should move the tracked task to **Merged** on the dashboard within about 10 seconds.
+6. Merge the pull request manually if it meets the review bar. Once the service processes the signed `pull_request/closed` webhook, the dashboard shows **Merged** on its next refresh (every 10 seconds).
 
-A successful demonstration produces a traceable chain of evidence: GitHub webhook delivery, issue progress comments, a Devin session, a reviewable pull request, and lifecycle status in both the dashboard and JSON endpoint. The automation does not merge the pull request or close the issue; those remain deliberate human decisions.
+A successful run links the issue, Devin session, and reviewable pull request through progress comments and dashboard status. PR readiness establishes a handoff for human review; the service does not independently verify test results and always reports validation as `unverified`. The service does not merge pull requests or close issues.
 
 ## Known gaps
 
