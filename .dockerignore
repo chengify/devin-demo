@@ -3,8 +3,8 @@ npm-debug.log
 dist
 .git
 .gitignore
-.env
-.env.local
+.env*
+logs
 plan
 superset
 .vscode

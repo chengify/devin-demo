@@ -38,4 +38,6 @@ test('dashboard renders metrics and evidence links without injecting issue HTML'
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
   assert.doesNotMatch(html, /<script>alert\(1\)<\/script>/);
   assert.match(html, /http-equiv="refresh" content="10"/);
+  assert.doesNotMatch(html, /<th>Validation<\/th>|unverified/);
+  assert.match(html, /PR ready means a reviewable pull request was produced\. Review its changes and test evidence before merging\./);
 });

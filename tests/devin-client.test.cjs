@@ -48,7 +48,7 @@ test('create uses the v3 contract and always applies the configured ACU limit', 
   });
 });
 test('current opaque hexadecimal session IDs are accepted', async () => {
-  const id = '10981f5d80af4c06b501ae71bb92d887';
+  const id = '0123456789abcdef0123456789abcdef';
   const response = {
     ...fixture('new', null),
     session_id: id,

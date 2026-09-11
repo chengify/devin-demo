@@ -26,7 +26,7 @@ These are separate credentials and integrations. The GitHub token is used by thi
 | GitHub webhook secret | GitHub and coordinator | Authenticate webhook payloads with an HMAC signature. |
 | GitHub repository webhook | GitHub | Deliver issue triggers and merged-PR lifecycle events. |
 
-Never paste credentials into issues, pull requests, logs, screenshots, Loom, or committed files. Store them only in the Git-ignored `.env` file. If a credential is exposed, revoke and replace it before continuing.
+Never paste credentials into issues, pull requests, logs, screenshots, recordings, or committed files. Store them only in the Git-ignored `.env` file. If a credential is exposed, revoke and replace it before continuing.
 
 ## 1. Prepare the repositories
 
@@ -98,7 +98,7 @@ Create a fine-grained personal access token from GitHub **Settings → Developer
 
 - Set the resource owner to the owner of the Superset fork.
 - Restrict repository access to **Only select repositories** and choose `superset`.
-- Choose a short expiration appropriate for the take-home.
+- Choose a short expiration appropriate for the intended deployment period.
 - Grant these repository permissions:
 
 | Permission | Access | Why |
@@ -164,7 +164,7 @@ SESSION_TIMEOUT_MINUTES=30
 MAX_CONCURRENT_SESSIONS=1
 ```
 
-Keep `MAX_CONCURRENT_SESSIONS=1` for a controlled interview demo. The service validates missing or placeholder Devin credentials before attempting API work.
+Keep `MAX_CONCURRENT_SESSIONS=1` for a controlled initial run. The service validates missing or placeholder Devin credentials before attempting API work.
 
 ## 7. Start and verify the service
 

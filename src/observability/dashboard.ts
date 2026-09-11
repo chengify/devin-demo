@@ -73,7 +73,6 @@ export function renderDashboard(
         <td><span class="badge ${task.displayState}">${escapeHtml(stateLabel(task))}</span></td>
         <td>${link(task.sessionUrl, "Open session")}</td>
         <td>${link(task.prUrl, task.status === "merged" ? "View merged PR" : "Open PR")}</td>
-        <td>${escapeHtml(task.validation || "—")}</td>
         <td>${escapeHtml(duration(task.duration))}</td>
         <td>${escapeHtml(new Date(task.timestamp).toLocaleString("en-US", { timeZone: "UTC" }))} UTC</td>
         <td>${escapeHtml(detail)}</td>
@@ -83,7 +82,7 @@ export function renderDashboard(
 
   const taskRows =
     rows ||
-    '<tr><td colspan="8" class="empty">No automation tasks recorded yet.</td></tr>';
+    '<tr><td colspan="7" class="empty">No automation tasks recorded yet.</td></tr>';
 
   return `<!doctype html>
 <html lang="en">
@@ -142,10 +141,11 @@ export function renderDashboard(
     <section class="table-wrap">
       <table>
         <caption>Current and completed tasks</caption>
-        <thead><tr><th>Issue</th><th>State</th><th>Devin</th><th>Output</th><th>Validation</th><th>Duration</th><th>Updated</th><th>Detail</th></tr></thead>
+        <thead><tr><th>Issue</th><th>State</th><th>Devin</th><th>Output</th><th>Duration</th><th>Updated</th><th>Detail</th></tr></thead>
         <tbody>${taskRows}</tbody>
       </table>
     </section>
+    <p class="muted">PR ready means a reviewable pull request was produced. Review its changes and test evidence before merging.</p>
     <footer><span>Auto-refreshes every 10 seconds</span><span>Last metrics update: ${escapeHtml(metrics.lastUpdateTime)}</span></footer>
   </main>
 </body>

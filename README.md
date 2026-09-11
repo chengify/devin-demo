@@ -54,11 +54,11 @@ After completing the [experiment setup guide](docs/SETUP_GUIDE.md), run the end-
 5. Follow the session link to inspect Devin's work and review the resulting pull request, including its diff and reported validation.
 6. Merge the pull request manually if it meets the review bar. Once the service processes the signed `pull_request/closed` webhook, the dashboard shows **Merged** on its next refresh (every 10 seconds).
 
-A successful run links the issue, Devin session, and reviewable pull request through progress comments and dashboard status. PR readiness establishes a handoff for human review; the service does not independently verify test results and always reports validation as `unverified`. The service does not merge pull requests or close issues.
+A successful run links the issue, Devin session, and reviewable pull request through progress comments and dashboard status. The dashboard explains that PR readiness is a handoff for human review: review the changes and test evidence before merging. The service does not merge pull requests or close issues.
 
 ## Known gaps
 
-1. **Independent validation:** PR readiness and Devin-reported test evidence are captured, but CI is not ingested and the service reports validation as `unverified`.
+1. **Independent validation:** PR readiness and Devin-reported test evidence are captured, but CI is not ingested. JSON activity records retain `validation: unverified`; the dashboard shows a review reminder instead of a validation column.
 2. **Session controls:** Automate recovery/resumption of monitored sessions. A monitoring failure, blocked state, or unconfirmed termination releases local capacity while the remote session may remain resumable or active. Concurrency controls local tasks; the submitted per-session ACU limit is not a global spending cap.
 3. **Durable tasks:** Persist recoverable task records and delivery IDs, resume monitoring after restart, and derive aggregates from records. Current JSON aggregates preserve reporting but are not a task queue.
 4. **Simulation:** Provide a user-facing credential-free simulation. Regression tests use fake clients but are not yet a complete demo command.
